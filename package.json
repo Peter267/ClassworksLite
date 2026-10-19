@@ -1,0 +1,31 @@
+{
+  "name": "classworks-lite",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "ClassworksLite —— 适用于班级大屏的作业板 · Serverless 部署版",
+  "license": "AGPL-3.0-or-later",
+  "homepage": "https://github.com/Moonrend/Classworks",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "deploy:cf": "npm run build && wrangler pages deploy dist",
+    "deploy:worker": "npm run build && wrangler deploy -c wrangler.toml"
+  },
+  "dependencies": {
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.14",
+    "@types/node": "^26.6.5",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.0.4",
+    "tailwindcss": "^4.1.14",
+    "typescript": "^5.9.3",
+    "vite": "^7.1.9"
+  }
+}

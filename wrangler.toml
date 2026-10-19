@@ -1,0 +1,19 @@
+name = "classworks-lite"
+main = "worker/index.ts"
+compatibility_date = "2025-09-01"
+
+# 静态资源：构建产物目录，交给 ASSETS 绑定
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+# KV 命名空间：执行 `npx wrangler kv namespace create KV` 后把 id 填进来
+[[kv_namespaces]]
+binding = "KV"
+id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+
+[vars]
+# CORS_ORIGIN = "https://your-domain.com"
+
+# 敏感值请用 `npx wrangler secret put SITE_TOKEN` 写入，不要提交到仓库

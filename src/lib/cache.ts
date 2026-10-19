@@ -1,0 +1,116 @@
+/**
+ * 本地缓存层。
+ *
+ * 采用 localStorage 而不是 IndexedDB，原因：
+ *  - 同步读写，首屏不依赖异步回调，弱网/隐私模式/无头环境下不会挂起；
+ *  - 单个班级的数据量很小（每天几 KB），5MB 配额足够存放数年的历史；
+ *  - 接口仍保持 Promise 形式，便于将来替换为 IndexedDB 或服务端缓存。
+ */
+
+const PREFIX = 'classworks-lite:kv:'
+
+export interface RawRecord {
+  key: string
+  value: unknown
+  updatedAt: number
+  pending?: boolean
+}
+
+/** 本地存储不可写（配额耗尽或存储被禁用） */
+export class StorageWriteError extends Error {
+  constructor(message = '本地存储不可写') {
+    super(message)
+    this.name = 'StorageWriteError'
+  }
+}
+
+function storage(): Storage | null {
+  try {
+    return typeof localStorage === 'undefined' ? null : localStorage
+  } catch {
+    return null
+  }
+}
+
+function readAll(): RawRecord[] {
+  const store = storage()
+  if (!store) return []
+  const records: RawRecord[] = []
+  for (let i = 0; i < store.length; i += 1) {
+    const name = store.key(i)
+    if (!name?.startsWith(PREFIX)) continue
+    try {
+      const raw = store.getItem(name)
+      if (!raw) continue
+      const parsed = JSON.parse(raw) as RawRecord
+      if (parsed && typeof parsed.key === 'string') records.push(parsed)
+    } catch {
+      /* 单条损坏不影响整体 */
+    }
+  }
+  return records
+}
+
+export async function cacheAll(): Promise<RawRecord[]> {
+  return readAll()
+}
+
+export async function cacheGet(key: string): Promise<RawRecord | undefined> {
+  const store = storage()
+  if (!store) return undefined
+  try {
+    const raw = store.getItem(PREFIX + key)
+    if (!raw) return undefined
+    return JSON.parse(raw) as RawRecord
+  } catch {
+    return undefined
+  }
+}
+
+export async function cacheSet(record: RawRecord): Promise<void> {
+  const store = storage()
+  if (!store) throw new StorageWriteError('浏览器本地存储不可用，改动无法落盘')
+
+  const payload = JSON.stringify(record)
+  try {
+    store.setItem(PREFIX + record.key, payload)
+    return
+  } catch (err) {
+    // 配额不足：只清理「已同步」的旧记录，绝不淘汰待上传的离线副本
+    console.warn('[cache] 写入失败，尝试清理已同步的旧记录', err)
+    const reclaimable = readAll()
+      .filter((item) => item.key !== record.key && !item.pending)
+      .sort((a, b) => a.updatedAt - b.updatedAt)
+    for (const stale of reclaimable.slice(0, Math.max(1, Math.ceil(reclaimable.length / 3)))) {
+      store.removeItem(PREFIX + stale.key)
+    }
+    try {
+      store.setItem(PREFIX + record.key, payload)
+    } catch {
+      throw new StorageWriteError('本地存储空间不足，改动无法落盘')
+    }
+  }
+}
+
+export async function cacheDelete(key: string): Promise<void> {
+  storage()?.removeItem(PREFIX + key)
+}
+
+/** 清空本地缓存（设置页「清除本地缓存」使用） */
+export async function cacheClear(): Promise<void> {
+  const store = storage()
+  if (!store) return
+  const names: string[] = []
+  for (let i = 0; i < store.length; i += 1) {
+    const name = store.key(i)
+    if (name?.startsWith(PREFIX)) names.push(name)
+  }
+  names.forEach((name) => store.removeItem(name))
+}
+
+/** 导出全部本地数据，便于备份 */
+export async function cacheExport(): Promise<Record<string, unknown>> {
+  const result: Record<string, unknown> = {}
+  for (const record of readAll()) result[record.key] = record.value
+  return result
+}

@@ -1,0 +1,19 @@
+node_modules
+dist
+dist-ssr
+.data
+.DS_Store
+*.local
+.env
+.env.*
+!.env.example
+.wrangler
+.vercel
+.idea
+.vscode/*
+!.vscode/extensions.json
+_reference
+*.tsbuildinfo
+
+# Agent workspace data (audit scripts, screenshots, memory)
+.workbuddy/
