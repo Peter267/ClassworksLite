@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
-import { Icon } from './Icon'
+import { MdiIcon } from './MdiIcon'
 import { Modal } from './ui/Modal'
-import { useAppState, useSetting } from '../lib/hooks'
+import { useAppState, useMediaQuery, useSetting } from '../lib/hooks'
 import { attendanceStats, store, type AttendanceKind } from '../lib/store'
 import { toast } from '../lib/toast'
 
@@ -25,43 +25,47 @@ export function AttendanceSidebar({ onOpen }: { onOpen: () => void }) {
   const state = useAppState()
   const stats = useAttendanceSummary()
   const { absent, late, exclude } = state.board.attendance
+  const lgAndUp = useMediaQuery('(min-width: 1280px)')
 
   return (
     <aside className="attendance-area no-select" onClick={onOpen}>
       <h1>出勤</h1>
       <h2>
-        <span style={{ whiteSpace: 'nowrap' }}>应到</span>：
+        <span style={{ whiteSpace: 'nowrap' }}>应到</span> :{' '}
         <span style={{ whiteSpace: 'nowrap' }}>{stats.expected}人</span>
       </h2>
       <h2>
-        <span style={{ whiteSpace: 'nowrap' }}>实到</span>：
+        <span style={{ whiteSpace: 'nowrap' }}>实到</span> :{' '}
         <span style={{ whiteSpace: 'nowrap' }}>{stats.present}人</span>
       </h2>
       <h2>
-        <span style={{ whiteSpace: 'nowrap' }}>请假</span>：
+        <span style={{ whiteSpace: 'nowrap' }}>请假</span> :{' '}
         <span style={{ whiteSpace: 'nowrap' }}>{absent.length}人</span>
       </h2>
       {absent.map((name, index) => (
         <h3 key={`absent-${name}`} className="gray-text">
-          {index + 1}. <span style={{ whiteSpace: 'nowrap' }}>{name}</span>
+          {lgAndUp && <span>{index + 1}. </span>}
+          <span style={{ whiteSpace: 'nowrap' }}>{name}</span>
         </h3>
       ))}
       <h2>
-        <span style={{ whiteSpace: 'nowrap' }}>迟到</span>：
+        <span style={{ whiteSpace: 'nowrap' }}>迟到</span> :{' '}
         <span style={{ whiteSpace: 'nowrap' }}>{late.length}人</span>
       </h2>
       {late.map((name, index) => (
         <h3 key={`late-${name}`} className="gray-text">
-          {index + 1}. <span style={{ whiteSpace: 'nowrap' }}>{name}</span>
+          {lgAndUp && <span>{index + 1}. </span>}
+          <span style={{ whiteSpace: 'nowrap' }}>{name}</span>
         </h3>
       ))}
       <h2>
-        <span style={{ whiteSpace: 'nowrap' }}>不参与</span>：
+        <span style={{ whiteSpace: 'nowrap' }}>不参与</span> :{' '}
         <span style={{ whiteSpace: 'nowrap' }}>{exclude.length}人</span>
       </h2>
       {exclude.map((name, index) => (
         <h3 key={`exclude-${name}`} className="gray-text">
-          {index + 1}. <span style={{ whiteSpace: 'nowrap' }}>{name}</span>
+          {lgAndUp && <span>{index + 1}. </span>}
+          <span style={{ whiteSpace: 'nowrap' }}>{name}</span>
         </h3>
       ))}
     </aside>
@@ -77,7 +81,7 @@ export function AttendanceCard({ onOpen }: { onOpen: () => void }) {
   return (
     <article className="v-card border rounded-xl glow-track cursor-pointer" onClick={onOpen}>
       <div className="v-card-title">
-        <Icon name="users" size={20} className="text-primary mr-2" />
+        <MdiIcon name="account-group" size={20} className="text-primary mr-2" />
         出勤统计
       </div>
       <div className="v-card-text">
@@ -220,7 +224,7 @@ export function AttendanceDialog({
             className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2"
             style={{ color: 'var(--text-3)' }}
           >
-            <Icon name="search" size={15} />
+            <MdiIcon name="magnify" size={15} />
           </span>
           <input
             className="field pl-9"

@@ -58,7 +58,7 @@ export function Home({
   const [antiBurn] = useSetting<boolean>('display.showAntiScreenBurnCard')
 
   const isMobile = useMediaQuery('(max-width: 799px)')
-  const wideScreen = useMediaQuery('(min-width: 960px)')
+  const wideScreen = useMediaQuery('(min-width: 1280px)')
   const isDesktop = forceDesktop || wideScreen
   /** 800–959px 既没有侧栏也不该丢掉出勤入口，统一用卡片承载（F4） */
   const showAttendanceCard = !isDesktop
@@ -422,9 +422,9 @@ export function Home({
                       data-color="amber"
                       onClick={() => setRandomOpen(true)}
                     >
-                      <Icon name="account" size={20} />
+                      <Icon name="accountQuestion" size={20} />
                       随机点名
-                      <Icon name="grid" size={20} />
+                      <Icon name="diceMultiple" size={20} />
                     </button>
                   )}
 

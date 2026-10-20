@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Icon } from '../Icon'
+import { MdiIcon } from '../MdiIcon'
 import { SettingsCard } from './SettingsCard'
 import { SettingItem } from './SettingItem'
 import { getClient } from '../../lib/kv'
@@ -88,7 +88,7 @@ export function NoiseSettingsCard() {
 
       <div style={{ padding: '0 16px 16px' }}>
         <div className="d-flex align-center mb-4">
-          <Icon name="clock" size={22} className="text-teal mr-2" />
+          <MdiIcon name="clock-edit-outline" size={22} className="text-teal mr-2" />
           <span className="text-subtitle-1 font-weight-bold">晚自习时间段</span>
           <div className="flex-grow-1" />
           <button
@@ -107,7 +107,7 @@ export function NoiseSettingsCard() {
               ])
             }
           >
-            <Icon name="plus" size={16} />
+            <MdiIcon name="plus" size={18} />
             添加时段
           </button>
         </div>
@@ -202,7 +202,7 @@ export function NoiseSettingsCard() {
                       onClick={() => setSessions((current) => current.filter((_, i) => i !== index))}
                       aria-label="删除时段"
                     >
-                      <Icon name="trash" size={18} />
+                      <MdiIcon name="delete" size={18} />
                     </button>
                   </div>
                 </div>
@@ -211,7 +211,7 @@ export function NoiseSettingsCard() {
 
             {sessions.length === 0 && (
               <div className="text-center text-medium-emphasis py-4">
-                <Icon name="clock" size={20} className="mb-1" />
+                <MdiIcon name="clock-outline" size={20} className="mb-1" />
                 <div className="text-caption">暂无时间段，点击上方「添加时段」创建</div>
               </div>
             )}
@@ -221,7 +221,7 @@ export function NoiseSettingsCard() {
         <hr className="v-divider" style={{ margin: '20px 0' }} />
 
         <div className="d-flex align-center mb-4">
-          <Icon name="warning" size={22} className="text-orange mr-2" />
+          <MdiIcon name="alert-decagram" size={22} className="text-orange mr-2" />
           <span className="text-subtitle-1 font-weight-bold">监测参数</span>
         </div>
 
@@ -243,7 +243,7 @@ export function NoiseSettingsCard() {
 
         <div className="d-flex justify-end" style={{ gap: 12, marginBottom: 8 }}>
           <button type="button" className="v-btn v-btn--variant-text" onClick={reset}>
-            <Icon name="restore" size={18} />
+            <MdiIcon name="restore" size={18} />
             重置
           </button>
           <button
@@ -253,7 +253,7 @@ export function NoiseSettingsCard() {
             disabled={saving}
             onClick={() => void save()}
           >
-            <Icon name="save" size={18} />
+            <MdiIcon name="content-save-outline" size={18} />
             保存配置
           </button>
         </div>

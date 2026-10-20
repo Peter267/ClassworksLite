@@ -1,6 +1,6 @@
-import { useEffect, useRef, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { Icon } from '../Icon'
+import { MdiIcon } from '../MdiIcon'
 import { useMediaQuery } from '../../lib/hooks'
 
 interface ModalProps {
@@ -43,11 +43,16 @@ export function Modal({
   const panelRef = useRef<HTMLDivElement>(null)
   const mobile = useMediaQuery('(max-width: 599px)')
   const fullscreen = fullscreenOnMobile && mobile
+  const [scrollbarWidth, setScrollbarWidth] = useState(0)
 
   useEffect(() => {
     if (!open) return
-    const previous = document.body.style.overflow
+    const previousOverflow = document.body.style.overflow
+    const previousPadding = document.body.style.paddingRight
+    const scrollbar = window.innerWidth - document.documentElement.clientWidth
+    setScrollbarWidth(scrollbar > 0 ? scrollbar : 0)
     document.body.style.overflow = 'hidden'
+    if (scrollbar > 0) document.body.style.paddingRight = `${scrollbar}px`
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape' && closable) {
         event.stopPropagation()
@@ -56,7 +61,9 @@ export function Modal({
     }
     window.addEventListener('keydown', onKey)
     return () => {
-      document.body.style.overflow = previous
+      document.body.style.overflow = previousOverflow
+      document.body.style.paddingRight = previousPadding
+      setScrollbarWidth(0)
       window.removeEventListener('keydown', onKey)
     }
   }, [open, onClose, closable])
@@ -68,7 +75,12 @@ export function Modal({
   if (!open || typeof document === 'undefined') return null
 
   return createPortal(
-    <div className="v-overlay" role="dialog" aria-modal="true">
+    <div
+      className="v-overlay"
+      role="dialog"
+      aria-modal="true"
+      style={scrollbarWidth ? { paddingRight: 24 + scrollbarWidth } : undefined}
+    >
       <div
         className="absolute inset-0"
         onClick={maskClosable ? onClose : undefined}
@@ -98,8 +110,14 @@ export function Modal({
               )}
             </div>
             {closable && (
-              <button type="button" className="v-btn v-btn--icon v-btn--variant-text" onClick={onClose} aria-label="关闭">
-                <Icon name="close" size={20} />
+              <button
+                type="button"
+                className="v-btn v-btn--icon v-btn--variant-text"
+                style={{ width: 48, height: 48, minWidth: 48 }}
+                onClick={onClose}
+                aria-label="关闭"
+              >
+                <MdiIcon name="close" size={24} />
               </button>
             )}
           </header>

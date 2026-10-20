@@ -41,8 +41,7 @@ function push(kind: ToastKind, title: string, message?: string) {
   items = [...items, { id, kind, title, message }].slice(-4)
   messages.add(kind, title, message)
   emit()
-  const timeout = kind === 'error' ? 6000 : 3200
-  setTimeout(() => dismissToast(id), timeout)
+  setTimeout(() => dismissToast(id), 2000)
   return id
 }
 

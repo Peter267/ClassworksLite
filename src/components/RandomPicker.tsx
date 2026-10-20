@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Icon } from './Icon'
+import { MdiIcon } from './MdiIcon'
 import { Modal } from './ui/Modal'
 import { useAppState } from '../lib/hooks'
 import { settings } from '../lib/settings'
@@ -142,12 +142,21 @@ export function RandomPicker({ open, onClose }: { open: boolean; onClose: () => 
   }
 
   const remaining = filteredStudents.filter((name) => !picked.includes(name))
+  const [refreshing, setRefreshing] = useState<number | null>(null)
+  const refreshTimer = useRef<number | null>(null)
 
   const refreshSingle = (index: number) => {
     if (remaining.length === 0) return
     const name = remaining[Math.floor(Math.random() * remaining.length)]
     setPicked((current) => current.map((item, i) => (i === index ? name : item)))
+    setRefreshing(index)
+    if (refreshTimer.current) window.clearTimeout(refreshTimer.current)
+    refreshTimer.current = window.setTimeout(() => setRefreshing(null), 500)
   }
+
+  useEffect(() => () => {
+    if (refreshTimer.current) window.clearTimeout(refreshTimer.current)
+  }, [])
 
   return (
     <Modal
@@ -156,70 +165,71 @@ export function RandomPicker({ open, onClose }: { open: boolean; onClose: () => 
       width={600}
       maskClosable={false}
       fullscreenOnMobile
+      className="random-picker-dialog"
       title={
-        <>
-          <Icon name="account" size={24} className="mr-2" />
+        <span className="text-h5 d-flex align-center">
+          <MdiIcon name="account-question" size={36} className="mr-2" />
           随机点名
-        </>
+        </span>
       }
     >
       {!started ? (
-        <div className="text-center" style={{ padding: '24px 8px' }}>
+        <div className="text-center py-6 px-6">
           <div className="text-h6 mb-4">请选择抽取人数</div>
 
-          <div className="d-flex justify-center align-center random-counter">
+          <div className="d-flex justify-center align-center counter-container">
             <button
               type="button"
-              className="v-btn v-btn--icon v-btn--variant-tonal counter-btn"
+              className="v-btn v-btn--icon v-btn--size-x-large v-btn--variant-tonal counter-btn"
               data-color="primary"
               disabled={count <= 1}
               onClick={() => setCount((value) => Math.max(1, value - 1))}
               aria-label="减少人数"
             >
-              <Icon name="minus" size={26} />
+              <MdiIcon name="minus" size={27} />
             </button>
 
-            <div className="mx-8" style={{ minWidth: 100, textAlign: 'center' }}>
-              <span className="text-h3 font-weight-bold">{count}</span>
+            <div className="count-display mx-8">
+              <span className="text-h2 font-weight-bold">{count}</span>
               <span className="text-subtitle-1 ml-2">人</span>
             </div>
 
             <button
               type="button"
-              className="v-btn v-btn--icon v-btn--variant-tonal counter-btn"
+              className="v-btn v-btn--icon v-btn--size-x-large v-btn--variant-tonal counter-btn"
               data-color="primary"
               disabled={count >= maxAllowed}
               onClick={() => setCount((value) => Math.min(maxAllowed, value + 1))}
               aria-label="增加人数"
             >
-              <Icon name="plus" size={26} />
+              <MdiIcon name="plus" size={27} />
             </button>
           </div>
 
-          <div className="mt-6 d-flex justify-center">
+          <div className="mode-switch-container mt-6">
             <div className="v-btn-group mode-toggle">
               <button
                 type="button"
-                className={`v-btn ${pickerMode === 'name' ? 'v-btn--variant-flat' : 'v-btn--variant-text'}`}
+                className={`v-btn ${pickerMode === 'name' ? 'v-btn--variant-flat v-btn--active' : 'v-btn--variant-text'}`}
                 data-color={pickerMode === 'name' ? 'primary' : undefined}
                 onClick={() => {
                   setPickerMode('name')
                   settings.set('randomPicker.mode', 'name')
                 }}
               >
-                <Icon name="account" size={18} />
+                <MdiIcon name="account" size={18} />
                 姓名模式
               </button>
               <button
                 type="button"
-                className={`v-btn ${pickerMode === 'number' ? 'v-btn--variant-flat' : 'v-btn--variant-text'}`}
+                className={`v-btn ${pickerMode === 'number' ? 'v-btn--variant-flat v-btn--active' : 'v-btn--variant-text'}`}
                 data-color={pickerMode === 'number' ? 'primary' : undefined}
                 onClick={() => {
                   setPickerMode('number')
                   settings.set('randomPicker.mode', 'number')
                 }}
               >
-                <Icon name="list" size={18} />
+                <MdiIcon name="numeric" size={18} />
                 学号模式
               </button>
             </div>
@@ -229,35 +239,35 @@ export function RandomPicker({ open, onClose }: { open: boolean; onClose: () => 
             <div className="number-range-container mt-4">
               <div className="text-subtitle-1 mb-2">学号范围设置</div>
               <div className="d-flex justify-center align-center" style={{ gap: 16 }}>
-                <input
-                  className="v-field v-field--density-compact"
-                  style={{ width: 100 }}
-                  type="number"
-                  min={1}
-                  max={100}
-                  value={minNumber}
-                  onChange={(event) => {
-                    const next = Math.max(1, Math.min(Number(event.target.value), maxNumber))
-                    setMinNumber(next)
-                    settings.set('randomPicker.minNumber', next)
-                  }}
-                  aria-label="最小值"
-                />
+                <label className="number-input v-text-field--filled">
+                  <span className="v-field-label">最小值</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={100}
+                    value={minNumber}
+                    onChange={(event) => {
+                      const next = Math.max(1, Math.min(Number(event.target.value), maxNumber))
+                      setMinNumber(next)
+                      settings.set('randomPicker.minNumber', next)
+                    }}
+                  />
+                </label>
                 <span className="mx-2">至</span>
-                <input
-                  className="v-field v-field--density-compact"
-                  style={{ width: 100 }}
-                  type="number"
-                  min={1}
-                  max={100}
-                  value={maxNumber}
-                  onChange={(event) => {
-                    const next = Math.max(minNumber, Math.min(Number(event.target.value), 100))
-                    setMaxNumber(next)
-                    settings.set('randomPicker.maxNumber', next)
-                  }}
-                  aria-label="最大值"
-                />
+                <label className="number-input v-text-field--filled">
+                  <span className="v-field-label">最大值</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={100}
+                    value={maxNumber}
+                    onChange={(event) => {
+                      const next = Math.max(minNumber, Math.min(Number(event.target.value), 100))
+                      setMaxNumber(next)
+                      settings.set('randomPicker.maxNumber', next)
+                    }}
+                  />
+                </label>
               </div>
             </div>
           )}
@@ -270,7 +280,7 @@ export function RandomPicker({ open, onClose }: { open: boolean; onClose: () => 
               disabled={filteredStudents.length === 0}
               onClick={startPicking}
             >
-              <Icon name="shuffle" size={22} />
+              <MdiIcon name="dice-multiple" size={24} />
               开始抽取
             </button>
           </div>
@@ -284,12 +294,15 @@ export function RandomPicker({ open, onClose }: { open: boolean; onClose: () => 
           <div className="mt-4 text-caption">
             当前可抽取学生: {filteredStudents.length}人
             {pickerMode === 'name' && (
-              <span title={[
-                filters.excludeAbsent ? `已排除请假学生 (${absent.length}人)` : '',
-                filters.excludeLate ? `已排除迟到学生 (${late.length}人)` : '',
-                filters.excludeExcluded ? `已排除不参与学生 (${exclude.length}人)` : '',
-              ].filter(Boolean).join('\n')}>
-                <Icon name="info" size={16} className="ml-1" />
+              <span
+                className="v-tooltip-activator ml-1"
+                title={[
+                  filters.excludeAbsent ? `• 已排除请假学生 (${absent.length}人)` : '',
+                  filters.excludeLate ? `• 已排除迟到学生 (${late.length}人)` : '',
+                  filters.excludeExcluded ? `• 已排除不参与学生 (${exclude.length}人)` : '',
+                ].filter(Boolean).join('\n')}
+              >
+                <MdiIcon name="information-outline" size={15} />
               </span>
             )}
 
@@ -301,7 +314,7 @@ export function RandomPicker({ open, onClose }: { open: boolean; onClose: () => 
                   data-color={filters.excludeLate ? 'warning' : undefined}
                   onClick={() => setFilters((f) => ({ ...f, excludeLate: !f.excludeLate }))}
                 >
-                  <Icon name="clockAlert" size={16} />
+                  <MdiIcon name="clock-alert" size={18} />
                   {filters.excludeLate ? '排除' : '包含'}迟到学生
                 </button>
                 <button
@@ -310,7 +323,7 @@ export function RandomPicker({ open, onClose }: { open: boolean; onClose: () => 
                   data-color={filters.excludeAbsent ? 'error' : undefined}
                   onClick={() => setFilters((f) => ({ ...f, excludeAbsent: !f.excludeAbsent }))}
                 >
-                  <Icon name="users" size={16} />
+                  <MdiIcon name="account-off" size={18} />
                   {filters.excludeAbsent ? '排除' : '包含'}请假学生
                 </button>
                 <button
@@ -319,7 +332,7 @@ export function RandomPicker({ open, onClose }: { open: boolean; onClose: () => 
                   data-color={filters.excludeExcluded ? 'grey' : undefined}
                   onClick={() => setFilters((f) => ({ ...f, excludeExcluded: !f.excludeExcluded }))}
                 >
-                  <Icon name="close" size={16} />
+                  <MdiIcon name="account-cancel" size={18} />
                   {filters.excludeExcluded ? '排除' : '包含'}不参与学生
                 </button>
               </div>
@@ -327,53 +340,61 @@ export function RandomPicker({ open, onClose }: { open: boolean; onClose: () => 
           </div>
         </div>
       ) : (
-        <div className="text-center" style={{ padding: '24px 8px' }}>
+        <div className="text-center py-6 px-6">
           {animating ? (
-            <div className="random-animation">
-              <div className="random-shuffle">
-                {filteredStudents.map((name, index) => (
-                  <div
-                    key={`${name}-${index}`}
-                    className={`random-student ${highlighted.includes(index) ? 'highlighted' : ''}`}
-                  >
-                    {name}
-                  </div>
-                ))}
+            <div className="animation-container">
+              <div className="animation-wrapper">
+                <div className="shuffle-container">
+                  {filteredStudents.map((name, index) => (
+                    <div
+                      key={`${name}-${index}`}
+                      className={`student-item ${highlighted.includes(index) ? 'highlighted' : ''}`}
+                    >
+                      {name}
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
           ) : (
-            <div style={{ minHeight: 300 }}>
+            <div className="result-container">
               <div className="text-h6 mb-4">抽取结果</div>
               {picked.map((name, index) => (
-                <div className="v-card v-card--variant-outlined result-card mb-2" key={`${name}-${index}`}>
+                <div
+                  className={`v-card v-card--variant-outlined result-card mb-2 ${refreshing === index ? 'refresh-animation' : ''}`}
+                  data-color="primary"
+                  key={`${name}-${index}`}
+                >
                   <div className="v-card-text text-h4 text-center py-4 d-flex align-center justify-center">
                     {name}
                     <button
                       type="button"
-                      className="v-btn v-btn--icon v-btn--size-small v-btn--variant-text ml-2"
+                      className="v-btn v-btn--icon v-btn--size-small v-btn--variant-text ml-2 refresh-btn"
+                      data-color={remaining.length === 0 ? undefined : 'primary'}
                       disabled={remaining.length === 0}
                       title={remaining.length === 0 ? '没有更多可用学生' : '重新抽取此学生'}
                       onClick={() => refreshSingle(index)}
                     >
-                      <Icon name="refresh" size={18} />
+                      <MdiIcon name="refresh" size={18} />
                     </button>
                   </div>
                 </div>
               ))}
 
-              <div className="mt-6 d-flex justify-center flex-wrap" style={{ gap: 8 }}>
+              <div className="mt-8 d-flex justify-center">
                 <button
                   type="button"
-                  className="v-btn v-btn--size-large v-btn--variant-flat"
+                  className="v-btn v-btn--size-large v-btn--variant-flat mx-2"
                   data-color="primary"
                   onClick={reset}
                 >
-                  <Icon name="refresh" size={20} />
+                  <MdiIcon name="refresh" size={20} />
                   重新抽取
                 </button>
                 <button
                   type="button"
-                  className="v-btn v-btn--size-large v-btn--variant-outlined"
+                  className="v-btn v-btn--size-large v-btn--variant-outlined mx-2"
+                  data-color="grey"
                   onClick={onClose}
                 >
                   关闭

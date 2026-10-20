@@ -1,0 +1,148 @@
+@font-face {
+  font-family: 'Material Design Icons';
+  src: url('/fonts/mdi-subset.woff') format('woff');
+  font-weight: normal;
+  font-style: normal;
+  font-display: block;
+}
+.mdi {
+  display: inline-block;
+  font-family: 'Material Design Icons';
+  font-style: normal;
+  font-weight: normal;
+  font-size: 24px;
+  line-height: 1;
+  letter-spacing: normal;
+  text-transform: none;
+  white-space: nowrap;
+  word-wrap: normal;
+  direction: ltr;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: 'liga';
+}
+.mdi-account::before{content:"\F0004"}
+.mdi-account-cancel::before{content:"\F12DF"}
+.mdi-account-group::before{content:"\F0849"}
+.mdi-account-off::before{content:"\F0012"}
+.mdi-account-question::before{content:"\F0B59"}
+.mdi-alert::before{content:"\F0026"}
+.mdi-alert-circle::before{content:"\F0028"}
+.mdi-alert-circle-outline::before{content:"\F05D6"}
+.mdi-alert-decagram::before{content:"\F06BD"}
+.mdi-animation-play::before{content:"\F093A"}
+.mdi-arrow-left::before{content:"\F004D"}
+.mdi-arrow-right::before{content:"\F0054"}
+.mdi-bell::before{content:"\F009A"}
+.mdi-bell-alert::before{content:"\F0D59"}
+.mdi-bell-ring::before{content:"\F009E"}
+.mdi-blur::before{content:"\F00B5"}
+.mdi-book-edit::before{content:"\F168C"}
+.mdi-book-multiple::before{content:"\F00BB"}
+.mdi-bug-outline::before{content:"\F0A30"}
+.mdi-calendar::before{content:"\F00ED"}
+.mdi-calendar-alert::before{content:"\F0A31"}
+.mdi-calendar-check::before{content:"\F00EF"}
+.mdi-calendar-clock::before{content:"\F00F0"}
+.mdi-calendar-lock::before{content:"\F1641"}
+.mdi-calendar-text::before{content:"\F00F5"}
+.mdi-card-outline::before{content:"\F0B76"}
+.mdi-chat::before{content:"\F0B79"}
+.mdi-check::before{content:"\F012C"}
+.mdi-check-circle::before{content:"\F05E0"}
+.mdi-chevron-down::before{content:"\F0140"}
+.mdi-chevron-left::before{content:"\F0141"}
+.mdi-chevron-right::before{content:"\F0142"}
+.mdi-circle-half-full::before{content:"\F1396"}
+.mdi-clock-alert::before{content:"\F0955"}
+.mdi-clock-edit-outline::before{content:"\F19BB"}
+.mdi-clock-fast::before{content:"\F0152"}
+.mdi-clock-outline::before{content:"\F0150"}
+.mdi-clock-time-six-outline::before{content:"\F1450"}
+.mdi-close::before{content:"\F0156"}
+.mdi-cloud::before{content:"\F015F"}
+.mdi-code-tags::before{content:"\F0174"}
+.mdi-cog::before{content:"\F0493"}
+.mdi-cog-outline::before{content:"\F08BB"}
+.mdi-comment-quote::before{content:"\F1021"}
+.mdi-content-copy::before{content:"\F018F"}
+.mdi-content-paste::before{content:"\F0192"}
+.mdi-content-save-outline::before{content:"\F0818"}
+.mdi-counter::before{content:"\F0199"}
+.mdi-database::before{content:"\F01BC"}
+.mdi-database-sync::before{content:"\F0CFF"}
+.mdi-delete::before{content:"\F01B4"}
+.mdi-developer-board::before{content:"\F0697"}
+.mdi-dialpad::before{content:"\F061C"}
+.mdi-dice-multiple::before{content:"\F076E"}
+.mdi-dots-vertical::before{content:"\F01D9"}
+.mdi-download-off::before{content:"\F10B0"}
+.mdi-eye::before{content:"\F0208"}
+.mdi-file-export-outline::before{content:"\F102E"}
+.mdi-file-import-outline::before{content:"\F102F"}
+.mdi-form-textbox::before{content:"\F060E"}
+.mdi-format-list-numbered::before{content:"\F027B"}
+.mdi-format-size::before{content:"\F027F"}
+.mdi-fullscreen::before{content:"\F0293"}
+.mdi-fullscreen-exit::before{content:"\F0294"}
+.mdi-gesture-tap::before{content:"\F0741"}
+.mdi-gesture-tap-button::before{content:"\F12A8"}
+.mdi-history::before{content:"\F02DA"}
+.mdi-home::before{content:"\F02DC"}
+.mdi-identifier::before{content:"\F0EFE"}
+.mdi-image::before{content:"\F02E9"}
+.mdi-image-area::before{content:"\F02EB"}
+.mdi-inbox::before{content:"\F0687"}
+.mdi-information::before{content:"\F02FC"}
+.mdi-information-outline::before{content:"\F02FD"}
+.mdi-key::before{content:"\F0306"}
+.mdi-key-chain::before{content:"\F1574"}
+.mdi-link::before{content:"\F0337"}
+.mdi-list-box::before{content:"\F1B7B"}
+.mdi-lock-alert::before{content:"\F08EE"}
+.mdi-lock-clock::before{content:"\F097F"}
+.mdi-magnify::before{content:"\F0349"}
+.mdi-menu::before{content:"\F035C"}
+.mdi-menu-down::before{content:"\F035D"}
+.mdi-message-badge-outline::before{content:"\F1942"}
+.mdi-message-off-outline::before{content:"\F164E"}
+.mdi-message-outline::before{content:"\F0365"}
+.mdi-message-text-outline::before{content:"\F036A"}
+.mdi-microphone::before{content:"\F036C"}
+.mdi-microphone-off::before{content:"\F036D"}
+.mdi-minus::before{content:"\F0374"}
+.mdi-monitor::before{content:"\F0379"}
+.mdi-monitor-shimmer::before{content:"\F1104"}
+.mdi-moon-waning-crescent::before{content:"\F0F65"}
+.mdi-notebook::before{content:"\F082E"}
+.mdi-numeric::before{content:"\F03A0"}
+.mdi-numeric-negative-1::before{content:"\F1052"}
+.mdi-open-in-new::before{content:"\F03CC"}
+.mdi-pencil::before{content:"\F03EB"}
+.mdi-pin::before{content:"\F0403"}
+.mdi-play-circle-outline::before{content:"\F040D"}
+.mdi-plus::before{content:"\F0415"}
+.mdi-refresh::before{content:"\F0450"}
+.mdi-refresh-auto::before{content:"\F18F2"}
+.mdi-refresh-circle::before{content:"\F1377"}
+.mdi-restore::before{content:"\F099B"}
+.mdi-school::before{content:"\F0474"}
+.mdi-server::before{content:"\F048B"}
+.mdi-share::before{content:"\F0496"}
+.mdi-shield-account::before{content:"\F088F"}
+.mdi-shield-check::before{content:"\F0565"}
+.mdi-shield-key::before{content:"\F0BC4"}
+.mdi-shuffle-variant::before{content:"\F049F"}
+.mdi-sort-variant::before{content:"\F04BF"}
+.mdi-swap-vertical-bold::before{content:"\F0BCE"}
+.mdi-test-tube::before{content:"\F0668"}
+.mdi-text-box-outline::before{content:"\F09ED"}
+.mdi-theme-light-dark::before{content:"\F050E"}
+.mdi-timer-outline::before{content:"\F051B"}
+.mdi-timer-refresh::before{content:"\F1AE4"}
+.mdi-timer-sand::before{content:"\F051F"}
+.mdi-toggle-switch-outline::before{content:"\F0A1A"}
+.mdi-weather-night::before{content:"\F0594"}
+.mdi-web::before{content:"\F059F"}
+.mdi-white-balance-sunny::before{content:"\F05A8"}

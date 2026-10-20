@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
-import { Icon, type IconName } from '../Icon'
+import { MdiIcon } from '../MdiIcon'
 
-/** 设置卡片：对齐 SettingsCard.vue（v-card border rounded-xl + 图标标题） */
+/** 对齐 SettingsCard.vue：v-card border rounded-lg elevation-2 + v-card-item 图标标题 */
 export function SettingsCard({
   title,
   icon,
@@ -11,24 +11,27 @@ export function SettingsCard({
   className = '',
 }: {
   title: string
-  icon?: IconName
+  icon?: string
   subtitle?: string
   children: ReactNode
   action?: ReactNode
   className?: string
 }) {
   return (
-    <section className={`v-card border rounded-xl ${className}`}>
-      <div className="v-card-title" style={{ gap: 8 }}>
-        {icon && <Icon name={icon} size={22} className="text-primary mr-2" />}
-        <span>{title}</span>
-        <div className="flex-grow-1" />
-        {action}
+    <section className={`v-card settings-card rounded-lg border ${className}`}>
+      <div className="v-card-item">
+        {icon && (
+          <div className="v-card-item__prepend">
+            <MdiIcon name={icon} size={28} />
+          </div>
+        )}
+        <div className="v-card-item__content">
+          <div className="v-card-title text-h6">{title}</div>
+          {subtitle && <div className="v-card-subtitle">{subtitle}</div>}
+        </div>
+        {action && <div className="v-card-item__append">{action}</div>}
       </div>
-      {subtitle && <div className="v-card-subtitle">{subtitle}</div>}
-      <div className="v-card-text" style={{ padding: 0 }}>
-        {children}
-      </div>
+      <div className="v-card-text">{children}</div>
     </section>
   )
 }
