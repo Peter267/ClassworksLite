@@ -16,6 +16,8 @@ import {
   readAudit,
 } from './audit'
 import type { Backend, StoredRecord } from './kv-core'
+import { createLoginGuard } from './login-guard'
+import { constantTimeEqual, createToken, verifyToken } from './token'
 
 const TOKEN_TTL_MS = 12 * 60 * 60 * 1000
 const MAX_BODY_BYTES = 1_500_000
@@ -23,8 +25,6 @@ const MAX_LOGIN_BODY_BYTES = 16 * 1024
 const MAX_VALUE_BYTES = 1_000_000
 const MAX_KEYS = 1000
 const MAX_BACKUP_BYTES = 8 * 1024 * 1024
-const LOGIN_FAIL_LIMIT = 5
-const LOGIN_LOCK_MS = 10 * 60 * 1000
 const GUARD_KEY = '__admin-guard'
 const RESERVED_PREFIX = '__'
 
@@ -43,14 +43,6 @@ interface KeyRecord {
   size: number
   legacy: boolean
 }
-
-interface GuardEntry {
-  n: number
-  first: number
-  until: number
-}
-
-type GuardMap = Record<string, GuardEntry>
 
 /* ------------------------------------------------------------------ */
 /* 响应与编码                                                          */
@@ -78,12 +70,6 @@ function json(data: unknown, status = 200, origin?: string) {
   })
 }
 
-function base64url(bytes: Uint8Array): string {
-  let binary = ''
-  for (const byte of bytes) binary += String.fromCharCode(byte)
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
-}
-
 function byteLength(text: string): number {
   return encoder.encode(text).byteLength
 }
@@ -92,69 +78,9 @@ function byteLength(text: string): number {
 /* 密码与令牌                                                          */
 /* ------------------------------------------------------------------ */
 
-const hmacKeys = new Map<string, Promise<CryptoKey>>()
-
-function hmacKey(secret: string): Promise<CryptoKey> {
-  const cached = hmacKeys.get(secret)
-  if (cached) return cached
-  const key = crypto.subtle.importKey(
-    'raw',
-    encoder.encode(secret),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign'],
-  )
-  hmacKeys.set(secret, key)
-  if (hmacKeys.size > 8) {
-    const oldest = hmacKeys.keys().next().value
-    if (oldest) hmacKeys.delete(oldest)
-  }
-  return key
-}
-
-async function constantTimeEqual(a: string, b: string): Promise<boolean> {
-  const [left, right] = await Promise.all([
-    crypto.subtle.digest('SHA-256', encoder.encode(a)),
-    crypto.subtle.digest('SHA-256', encoder.encode(b)),
-  ])
-  const x = new Uint8Array(left)
-  const y = new Uint8Array(right)
-  let diff = 0
-  for (let i = 0; i < x.length; i += 1) diff |= x[i] ^ y[i]
-  return diff === 0
-}
-
 function tokenSecret(options: AdminOptions): string {
   const suffix = options.secret && options.secret.length > 0 ? options.secret : options.password
   return `classworks-lite-admin:${suffix ?? ''}`
-}
-
-async function tokenSignature(secret: string, payload: string): Promise<string> {
-  const signature = await crypto.subtle.sign(
-    'HMAC',
-    await hmacKey(secret),
-    encoder.encode(payload),
-  )
-  return base64url(new Uint8Array(signature))
-}
-
-async function createToken(secret: string): Promise<{ token: string; expiresAt: number }> {
-  const expiresAt = Date.now() + TOKEN_TTL_MS
-  const nonceBytes = new Uint8Array(8)
-  crypto.getRandomValues(nonceBytes)
-  const payload = `v1.${expiresAt}.${base64url(nonceBytes)}`
-  return { token: `${payload}.${await tokenSignature(secret, payload)}`, expiresAt }
-}
-
-async function verifyToken(token: string, secret: string): Promise<number | null> {
-  const parts = token.split('.')
-  if (parts.length !== 4 || parts[0] !== 'v1') return null
-  const expiresAt = Number(parts[1])
-  if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) return null
-  const payload = `${parts[0]}.${parts[1]}.${parts[2]}`
-  const expected = await tokenSignature(secret, payload)
-  if (!(await constantTimeEqual(expected, parts[3]))) return null
-  return expiresAt
 }
 
 function readToken(request: Request): string | null {
@@ -165,36 +91,8 @@ function readToken(request: Request): string | null {
 }
 
 /* ------------------------------------------------------------------ */
-/* 登录限流                                                            */
+/* 登录                                                                */
 /* ------------------------------------------------------------------ */
-
-async function ipKey(ip: string): Promise<string> {
-  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', encoder.encode(ip)))
-  return Array.from(digest.slice(0, 8), (b) => b.toString(16).padStart(2, '0')).join('')
-}
-
-async function readGuard(backend: Backend): Promise<GuardMap> {
-  try {
-    const raw = await backend.read(GUARD_KEY)
-    if (!raw) return {}
-    const parsed = JSON.parse(raw) as unknown
-    return parsed && typeof parsed === 'object' ? (parsed as GuardMap) : {}
-  } catch {
-    return {}
-  }
-}
-
-async function writeGuard(backend: Backend, guard: GuardMap): Promise<void> {
-  try {
-    const entries = Object.entries(guard)
-      .filter(([, entry]) => entry && typeof entry.until === 'number')
-      .sort((a, b) => b[1].first - a[1].first)
-      .slice(0, 200)
-    await backend.write(GUARD_KEY, JSON.stringify(Object.fromEntries(entries)))
-  } catch (err) {
-    console.warn('[admin] 登录限流状态写入失败', err)
-  }
-}
 
 async function handleLogin(
   request: Request,
@@ -204,15 +102,12 @@ async function handleLogin(
 ): Promise<Response> {
   const ip = clientIp(request)
   const ua = clientUserAgent(request)
-  const key = await ipKey(ip)
-  const now = Date.now()
-  const guard = await readGuard(backend)
-  const current = guard[key]
+  const guard = createLoginGuard(backend, GUARD_KEY)
 
-  if (current && current.until > now) {
-    const minutes = Math.ceil((current.until - now) / 60_000)
+  const lockedMinutes = await guard.locked(ip)
+  if (lockedMinutes > 0) {
     return json(
-      { error: 'too_many_attempts', message: `尝试次数过多，请 ${minutes} 分钟后再试` },
+      { error: 'too_many_attempts', message: `尝试次数过多，请 ${lockedMinutes} 分钟后再试` },
       429,
       options.corsOrigin,
     )
@@ -223,30 +118,20 @@ async function handleLogin(
   const ok = password.length > 0 && (await constantTimeEqual(password, expected))
 
   if (!ok) {
-    const next: GuardEntry =
-      current && now - current.first < LOGIN_LOCK_MS
-        ? current
-        : { n: 0, first: now, until: 0 }
-    next.n += 1
-    if (next.n >= LOGIN_FAIL_LIMIT) next.until = now + LOGIN_LOCK_MS
-    guard[key] = next
-    await writeGuard(backend, guard)
+    const lockedFor = await guard.fail(ip)
     await appendAudit(backend, {
       actor: 'admin',
       action: 'login_failed',
       ip,
       ua,
-      note: next.until > now ? '连续失败，已临时锁定' : '密码错误',
+      note: lockedFor > 0 ? '连续失败，已临时锁定' : '密码错误',
     })
     return json({ error: 'invalid_password', message: '密码错误' }, 401, options.corsOrigin)
   }
 
-  if (current) {
-    delete guard[key]
-    await writeGuard(backend, guard)
-  }
+  await guard.reset(ip)
 
-  const { token, expiresAt } = await createToken(tokenSecret(options))
+  const { token, expiresAt } = await createToken(tokenSecret(options), TOKEN_TTL_MS)
   await appendAudit(backend, { actor: 'admin', action: 'login', ip, ua })
   return json({ token, expiresAt }, 200, options.corsOrigin)
 }

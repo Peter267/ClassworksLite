@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { AppBar } from '../components/AppBar'
 import { MdiIcon } from '../components/MdiIcon'
+import { AccessSettingsCard } from '../components/settings/AccessSettingsCard'
 import { NoiseSettingsCard } from '../components/settings/NoiseSettingsCard'
 import { SettingItem } from '../components/settings/SettingItem'
 import { SettingsCard } from '../components/settings/SettingsCard'
@@ -325,6 +326,8 @@ export function SettingsPage({
                   </button>
                 </div>
               </SettingsCard>
+
+              <AccessSettingsCard />
 
               <SettingsCard title="数据源设置" icon="database">
                 {renderList(GROUP_SETTINGS.server ?? [])}

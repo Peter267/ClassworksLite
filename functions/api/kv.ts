@@ -12,6 +12,9 @@ import { handleKV } from '../../server/kv-core'
 
 interface Env {
   KV: KVNamespaceLike
+  SITE_PASSWORD?: string
+  EDIT_TOKEN?: string
+  AUTH_SECRET?: string
   SITE_TOKEN?: string
   CORS_ORIGIN?: string
 }
@@ -21,7 +24,13 @@ export async function onRequest(context: {
   env: Env
 }): Promise<Response> {
   const { request, env } = context
-  const options = { siteToken: env.SITE_TOKEN, corsOrigin: env.CORS_ORIGIN }
+  const options = {
+    siteToken: env.SITE_TOKEN,
+    sitePassword: env.SITE_PASSWORD,
+    authSecret: env.AUTH_SECRET,
+    editToken: env.EDIT_TOKEN,
+    corsOrigin: env.CORS_ORIGIN,
+  }
 
   if (!env.KV) {
     return new Response(

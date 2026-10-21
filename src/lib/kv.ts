@@ -14,6 +14,7 @@
  *   鉴权：Authorization: Bearer <SITE_TOKEN>
  */
 
+import { clearAccessToken, editTokenHeaders, getAccessCredential } from './access'
 import { cacheAll, cacheDelete, cacheGet, cacheSet } from './cache'
 import { getSetting } from './settings'
 import type { KVEntry, ProviderMode } from './types'
@@ -22,6 +23,13 @@ export class AuthError extends Error {
   constructor(message = '访问令牌无效') {
     super(message)
     this.name = 'AuthError'
+  }
+}
+
+export class EditAuthError extends Error {
+  constructor(message = '需要有效的编辑令牌才能修改作业') {
+    super(message)
+    this.name = 'EditAuthError'
   }
 }
 
@@ -98,11 +106,36 @@ function apiBase(): string {
 }
 
 function authHeaders(): Record<string, string> {
-  const token = getSetting('server.siteKey').trim()
+  const token = getAccessCredential()
   return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
-async function request(path: string, init: RequestInit = {}): Promise<Response> {
+/** 写入被服务端拒绝后不再重复发请求，等待编辑令牌更新 */
+let editDenied = false
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('classworks-lite:edit-token-changed', () => {
+    editDenied = false
+  })
+}
+
+function ensureWriteAllowed() {
+  if (editDenied) throw new EditAuthError()
+}
+
+async function readError(response: Response): Promise<{ error?: string; message?: string }> {
+  try {
+    return (await response.json()) as { error?: string; message?: string }
+  } catch {
+    return {}
+  }
+}
+
+async function request(
+  path: string,
+  init: RequestInit = {},
+  withEditToken = false,
+): Promise<Response> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), TIMEOUT)
   try {
@@ -111,14 +144,32 @@ async function request(path: string, init: RequestInit = {}): Promise<Response> 
       signal: controller.signal,
       headers: {
         ...authHeaders(),
+        ...(withEditToken ? editTokenHeaders() : {}),
         ...(init.body ? { 'Content-Type': 'application/json' } : {}),
         ...(init.headers ?? {}),
       },
     })
-    if (response.status === 401 || response.status === 403) throw new AuthError()
+    if (response.status === 401) {
+      clearAccessToken()
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('classworks-lite:access-denied'))
+      }
+      throw new AuthError()
+    }
+    if (response.status === 403) {
+      const error = await readError(response)
+      if (error.error === 'edit_token_required') {
+        editDenied = true
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('classworks-lite:edit-denied'))
+        }
+        throw new EditAuthError(error.message)
+      }
+      throw new AuthError(error.message ?? '没有权限执行此操作')
+    }
     return response
   } catch (err) {
-    if (err instanceof AuthError) throw err
+    if (err instanceof AuthError || err instanceof EditAuthError) throw err
     if (err instanceof DOMException && err.name === 'AbortError') {
       throw new NetworkError('请求超时')
     }
@@ -174,13 +225,19 @@ export class CloudClient implements KVClient {
   }
 
   async set<T>(key: string, value: T) {
+    ensureWriteAllowed()
     const localUpdatedAt = Date.now()
     try {
-      const response = await request('/api/kv', {
-        method: 'PUT',
-        body: JSON.stringify({ key, value }),
-      })
+      const response = await request(
+        '/api/kv',
+        {
+          method: 'PUT',
+          body: JSON.stringify({ key, value }),
+        },
+        true,
+      )
       if (!response.ok) throw new NetworkError(`服务端返回 ${response.status}`)
+      editDenied = false
       const data = (await response.json()) as { updatedAt: number }
       const entry: KVEntry<T> = { value, updatedAt: data.updatedAt }
       try {
@@ -190,7 +247,7 @@ export class CloudClient implements KVClient {
       }
       return { entry, queued: false }
     } catch (err) {
-      if (err instanceof AuthError) throw err
+      if (err instanceof AuthError || err instanceof EditAuthError) throw err
       // 离线降级：写入本地并标记待同步（写不进去会抛错，避免谎报成功）
       await cacheSet({ key, value, updatedAt: localUpdatedAt, pending: true })
       return { entry: { value, updatedAt: localUpdatedAt, pending: true }, queued: true }
@@ -198,13 +255,19 @@ export class CloudClient implements KVClient {
   }
 
   async remove(key: string) {
+    ensureWriteAllowed()
     try {
-      const response = await request(`/api/kv?key=${encodeURIComponent(key)}`, { method: 'DELETE' })
+      const response = await request(
+        `/api/kv?key=${encodeURIComponent(key)}`,
+        { method: 'DELETE' },
+        true,
+      )
       if (!response.ok) throw new NetworkError(`服务端返回 ${response.status}`)
+      editDenied = false
       await cacheDelete(key)
       return { queued: false }
     } catch (err) {
-      if (err instanceof AuthError) throw err
+      if (err instanceof AuthError || err instanceof EditAuthError) throw err
       await cacheSet({ key, value: null, updatedAt: Date.now(), pending: true })
       return { queued: true }
     }
@@ -226,29 +289,36 @@ export class CloudClient implements KVClient {
   }
 
   async flush(): Promise<number> {
+    if (editDenied) return 0
     const all = await cacheAll()
     const pending = all.filter((record) => record.pending)
     let done = 0
     for (const record of pending) {
       try {
         if (record.value === null) {
-          const response = await request(`/api/kv?key=${encodeURIComponent(record.key)}`, {
-            method: 'DELETE',
-          })
+          const response = await request(
+            `/api/kv?key=${encodeURIComponent(record.key)}`,
+            { method: 'DELETE' },
+            true,
+          )
           if (!response.ok) continue
           await cacheDelete(record.key)
         } else {
-          const response = await request('/api/kv', {
-            method: 'PUT',
-            body: JSON.stringify({ key: record.key, value: record.value }),
-          })
+          const response = await request(
+            '/api/kv',
+            {
+              method: 'PUT',
+              body: JSON.stringify({ key: record.key, value: record.value }),
+            },
+            true,
+          )
           if (!response.ok) continue
           const data = (await response.json()) as { updatedAt: number }
           await cacheSet({ key: record.key, value: record.value, updatedAt: data.updatedAt })
         }
         done += 1
       } catch (err) {
-        if (err instanceof AuthError) break
+        if (err instanceof AuthError || err instanceof EditAuthError) break
       }
     }
     return done

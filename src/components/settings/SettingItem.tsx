@@ -52,6 +52,7 @@ const KEY_ICONS: Record<string, string> = {
   'server.provider': 'database',
   'server.domain': 'web',
   'server.siteKey': 'key-chain',
+  'server.editToken': 'key-variant',
   'server.classNumber': 'school',
   'background.enabled': 'image',
   'background.url': 'link',
@@ -113,7 +114,9 @@ export function SettingItem({
         <MdiIcon name={icon} size={21} className="setting-item-icon" />
         <div className="setting-title">
           <div className="v-list-item-title text-wrap">{def.label}</div>
-          {description && <div className="v-list-item-subtitle">{description}</div>}
+          {(description ?? def.hint) && (
+            <div className="v-list-item-subtitle">{description ?? def.hint}</div>
+          )}
         </div>
         <div className="setting-item-append">
           {hasControl && (
@@ -246,8 +249,11 @@ export function SettingItem({
         <div className="setting-text-row">
           <input
             className="setting-text-input"
+            type={def.secret ? 'password' : 'text'}
             value={String(value)}
             disabled={disabled}
+            autoComplete="off"
+            spellCheck={false}
             onChange={(event) => set(event.target.value)}
             aria-label={def.label}
           />

@@ -29,6 +29,9 @@ export default async function handler(request: Request): Promise<Response> {
 
   return handleKV(request, new UpstashBackend(url, token), {
     siteToken: process.env.SITE_TOKEN,
+    sitePassword: process.env.SITE_PASSWORD,
+    authSecret: process.env.AUTH_SECRET,
+    editToken: process.env.EDIT_TOKEN,
     corsOrigin: process.env.CORS_ORIGIN,
   })
 }

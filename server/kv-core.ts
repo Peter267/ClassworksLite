@@ -10,6 +10,7 @@
  */
 
 import { appendAudit, clientIp, clientUserAgent } from './audit'
+import { isEditAuthorized, isViewAuthorized } from './auth-core'
 
 export interface StoredRecord {
   /** 业务数据本身 */
@@ -29,8 +30,14 @@ export interface Backend {
 }
 
 export interface HandlerOptions {
-  /** 为空表示不鉴权 */
+  /** 旧版静态访问令牌；为空表示不校验 */
   siteToken?: string
+  /** 站点访问密码；配置后读取需要 /api/auth 签发的令牌 */
+  sitePassword?: string
+  /** 访问令牌签名密钥，留空时使用 SITE_PASSWORD */
+  authSecret?: string
+  /** 编辑令牌；配置后写入 / 删除需要 X-Edit-Token */
+  editToken?: string
   /** 允许跨域的来源，默认 * */
   corsOrigin?: string
 }
@@ -41,7 +48,7 @@ const MAX_BODY_BYTES = 1_000_000
 const CORS_HEADERS = (origin: string): Record<string, string> => ({
   'Access-Control-Allow-Origin': origin,
   'Access-Control-Allow-Methods': 'GET, PUT, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Site-Key',
+  'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Site-Key, X-Edit-Token',
   'Access-Control-Max-Age': '86400',
   Vary: 'Origin',
 })
@@ -67,36 +74,51 @@ function validKey(key: unknown): key is string {
   )
 }
 
-function readToken(request: Request): string | null {
-  const auth = request.headers.get('authorization')
-  if (auth?.startsWith('Bearer ')) return auth.slice(7).trim()
-  const header = request.headers.get('x-site-key')
-  return header ? header.trim() : null
-}
-
 export async function handleKV(
   request: Request,
   backend: Backend,
   options: HandlerOptions = {},
 ): Promise<Response> {
   const origin = options.corsOrigin ?? '*'
+  // HandlerOptions 沿用 authSecret，校验函数统一使用 secret
+  const access = {
+    sitePassword: options.sitePassword,
+    editToken: options.editToken,
+    siteToken: options.siteToken,
+    secret: options.authSecret,
+  }
 
   if (request.method === 'OPTIONS') {
     return new Response(null, { status: 204, headers: CORS_HEADERS(origin) })
   }
 
-  if (options.siteToken) {
-    const token = readToken(request)
-    if (token !== options.siteToken) {
-      await appendAudit(backend, {
-        actor: 'site',
-        action: 'denied',
-        ip: clientIp(request),
-        ua: clientUserAgent(request),
-        note: '站点令牌无效',
-      })
-      return json({ error: 'unauthorized', message: '访问令牌无效' }, 401, origin)
-    }
+  if (!(await isViewAuthorized(request, access))) {
+    await appendAudit(backend, {
+      actor: 'site',
+      action: 'denied',
+      ip: clientIp(request),
+      ua: clientUserAgent(request),
+      note: options.sitePassword ? '缺少或过期的访问令牌' : '站点令牌无效',
+    })
+    return json({ error: 'unauthorized', message: '需要访问授权' }, 401, origin)
+  }
+
+  if (
+    (request.method === 'PUT' || request.method === 'DELETE') &&
+    !(await isEditAuthorized(request, access))
+  ) {
+    await appendAudit(backend, {
+      actor: 'site',
+      action: 'denied',
+      ip: clientIp(request),
+      ua: clientUserAgent(request),
+      note: '编辑令牌无效',
+    })
+    return json(
+      { error: 'edit_token_required', message: '需要有效的编辑令牌才能修改作业' },
+      403,
+      origin,
+    )
   }
 
   const url = new URL(request.url)

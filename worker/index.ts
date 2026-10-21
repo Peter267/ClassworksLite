@@ -5,12 +5,16 @@
  * /api/* 交给同一个 KV 处理器。
  */
 import { handleAdmin } from '../server/admin-core'
+import { handleAccess } from '../server/auth-core'
 import { createKVBackend, type KVNamespaceLike } from '../server/cloudflare'
 import { handleKV, healthResponse } from '../server/kv-core'
 
 interface Env {
   KV: KVNamespaceLike
   ASSETS: { fetch(request: Request): Promise<Response> }
+  SITE_PASSWORD?: string
+  EDIT_TOKEN?: string
+  AUTH_SECRET?: string
   SITE_TOKEN?: string
   ADMIN_PASSWORD?: string
   ADMIN_SECRET?: string
@@ -25,7 +29,11 @@ export default {
       return healthResponse(env.CORS_ORIGIN ?? '*')
     }
 
-    if (url.pathname === '/api/kv' || url.pathname === '/api/admin') {
+    if (
+      url.pathname === '/api/kv' ||
+      url.pathname === '/api/admin' ||
+      url.pathname === '/api/auth'
+    ) {
       if (!env.KV) {
         return new Response(JSON.stringify({ error: 'kv_not_bound' }), {
           status: 500,
@@ -33,6 +41,15 @@ export default {
         })
       }
       const backend = createKVBackend(env.KV)
+      if (url.pathname === '/api/auth') {
+        return handleAccess(request, backend, {
+          sitePassword: env.SITE_PASSWORD,
+          editToken: env.EDIT_TOKEN,
+          siteToken: env.SITE_TOKEN,
+          secret: env.AUTH_SECRET,
+          corsOrigin: env.CORS_ORIGIN,
+        })
+      }
       if (url.pathname === '/api/admin') {
         return handleAdmin(request, backend, {
           password: env.ADMIN_PASSWORD,
@@ -42,6 +59,9 @@ export default {
       }
       return handleKV(request, backend, {
         siteToken: env.SITE_TOKEN,
+        sitePassword: env.SITE_PASSWORD,
+        authSecret: env.AUTH_SECRET,
+        editToken: env.EDIT_TOKEN,
         corsOrigin: env.CORS_ORIGIN,
       })
     }

@@ -51,7 +51,7 @@ ClassworksLite 保留了 [Classworks](https://github.com/Moonrend/Classworks) �
 
 | 上游 | 本项目 | 原因 |
 | --- | --- | --- |
-| Classworks KV / 设备令牌 / OAuth | 本地模式 / 云端模式 + 可选 `SITE_TOKEN` | Serverless 无常驻会话，用「站点令牌」做单班级访问控制更简单 |
+| Classworks KV / 设备令牌 / OAuth | 本地模式 / 云端模式 + 访问密码、编辑令牌（旧版 `SITE_TOKEN` 仍兼容） | Serverless 无常驻会话，两级静态凭证即可满足单班级「查看 / 编辑」分离 |
 | Socket.IO 实时推送 | 15 秒增量轮询 + `BroadcastChannel`（同浏览器多标签即时） | 长连接需要常驻进程或 Durable Objects；轮询对作业板场景足够 |
 | PostgreSQL + Prisma | KV / Redis 键值存储 | 数据模型本来就是「按日期一条 JSON」，无需关系库 |
 | 设备聊天、紧急通知、消息日志 | 未实现 | 依赖常驻服务端推送 / 账号体系，与 Serverless 单班级目标无关 |
@@ -90,6 +90,38 @@ HarmonyOS Sans SC 字体，导出结果与上游一致。
   时段与报警阈值保存在 `noise-session-config`（KV），跨设备共享。
 - 校准：在已知环境分贝下做 3 秒自动校准，或手动填写基准分贝 / 基准 RMS / 最大分贝。
 - 相关设置：`noiseMonitor.enabled`、`noiseMonitor.autoStart`、`noiseMonitor.permissionDismissed`。
+
+## 访问密码与编辑权限
+
+服务端支持两级访问控制，均由 `/api/auth` 与 `/api/kv` 联合校验，前端无法绕过：
+
+| 环境变量 | 作用 | 前端操作 |
+| --- | --- | --- |
+| `SITE_PASSWORD` | 打开网站时要求输入访问密码，通过后签发 7 天有效的 HMAC 访问令牌，用于读取作业 | 访问门自动弹出，输入一次即可 |
+| `EDIT_TOKEN` | 修改 / 删除作业时要求 `X-Edit-Token`，未配置则不限制写入 | 「设置 → 服务器 → 访问权限 → 编辑令牌」填写同值 |
+| `AUTH_SECRET` | 访问令牌签名密钥；修改后所有访客的访问状态立即失效 | — |
+| `SITE_TOKEN` | 旧版静态访问令牌，仍可作为访问凭证（Bearer / `X-Site-Key`） | 「设置 → 服务器 → 网站令牌」 |
+
+行为说明：
+
+- 访问令牌保存在浏览器 localStorage，过期后自动回到访问门；「访问权限」卡片可手动
+  退出访问、重新校验。
+- 编辑令牌只保存在本地设置（localStorage），仅在 PUT / DELETE 请求时作为
+  `X-Edit-Token` 发送，不会随 GET 请求暴露。
+- 只配置 `SITE_PASSWORD` 时，任何访客都能查看并编辑；只配置 `EDIT_TOKEN` 时不设
+  查看密码，但修改仍需令牌。
+- 未配置编辑令牌或令牌无效时，前端进入只读模式：编辑操作被拦截并提示，不会产生
+  失败的写入请求或离线队列。
+- 同一 IP 连续 5 次访问密码错误锁定 10 分钟，限流状态保存在保留键 `__access-guard`；
+  登录、失败与越权请求都会写入审计日志。
+- 旧部署没有 `/api/auth` 时，前端自动视为「未启用访问控制」，保持原有行为。
+
+```bash
+# 本地体验
+SITE_PASSWORD=class-password EDIT_TOKEN=teacher-token npm run dev
+```
+
+---
 
 ## 管理后台
 
@@ -142,8 +174,9 @@ HarmonyOS Sans SC 字体，导出结果与上游一致。
 | 设置项（键名 / 默认值 / 分组 / 标题） | `src/lib/settings.ts` |
 | 主题与组件样式 | `src/index.css`（`--v-theme-*` 令牌） |
 | 数据与同步 | `src/lib/store.ts`、`src/lib/kv.ts` |
+| 访问门与访问状态 | `src/components/AccessGate.tsx`、`src/lib/access.ts` |
 | 管理后台前端 | `src/pages/Admin.tsx`、`src/lib/admin.ts` |
-| 管理接口与服务端 | `server/admin-core.ts`、`server/audit.ts` + `functions` / `worker` / `api` 适配器 |
+| 访问 / 管理接口 | `server/auth-core.ts`、`server/admin-core.ts`、`server/token.ts`、`server/audit.ts` |
 | 服务端 | `server/kv-core.ts` + `functions` / `worker` / `api` 适配器 |
 | UAF 导入导出 | `src/lib/uafExport.ts` |
 | 环境噪音监测 | `src/lib/noise.ts` |
@@ -184,6 +217,15 @@ npm run dev          # http://localhost:3031
 或直接运行 `ADMIN_PASSWORD=你的密码 npm run dev`，然后访问
 `http://localhost:3031/admin`。
 
+访问密码与编辑令牌同理，写入 `.env.local` 或直接通过命令行传入：
+
+```bash
+SITE_PASSWORD=class-password EDIT_TOKEN=teacher-token npm run dev
+```
+
+配置 `SITE_PASSWORD` 后刷新页面即可看到访问门；编辑令牌在「设置 → 服务器 → 访问权限」填写。
+纯静态部署（没有 `/api/auth`）会自动跳过访问门。
+
 其他命令：
 
 ```bash
@@ -215,7 +257,10 @@ npm run preview      # 预览构建结果（同样带本地 KV）
    - 输出目录：`dist`
 
 4. （可选）环境变量：
-   - `SITE_TOKEN`：启用访问令牌，前端需在「设置 → 服务器 → 网站令牌」填写同值
+   - `SITE_PASSWORD`：启用访问密码，访客输入后才能查看作业
+   - `EDIT_TOKEN`：启用编辑令牌，修改作业需在设置中填写同值
+   - `AUTH_SECRET`：访问令牌签名密钥（可选，推荐单独设置）
+   - `SITE_TOKEN`：旧版静态访问令牌（可选，迁移期兼容）
    - `CORS_ORIGIN`：限制允许来源，默认 `*`
    - `ADMIN_PASSWORD`：启用管理后台（必需，否则 `/admin` 不可用）
    - `ADMIN_SECRET`：管理令牌签名密钥（可选，推荐单独设置）
@@ -234,7 +279,10 @@ npx wrangler deploy
 敏感值用 `npx wrangler secret put` 写入：
 
 ```bash
-npx wrangler secret put SITE_TOKEN
+npx wrangler secret put SITE_PASSWORD    # 访问密码（查看作业前登录）
+npx wrangler secret put EDIT_TOKEN       # 编辑令牌（修改作业时校验）
+npx wrangler secret put AUTH_SECRET      # 可选，访问令牌签名
+npx wrangler secret put SITE_TOKEN       # 可选，旧版静态令牌
 npx wrangler secret put ADMIN_PASSWORD   # 管理后台必需
 npx wrangler secret put ADMIN_SECRET     # 可选
 ```
@@ -247,7 +295,8 @@ npx wrangler secret put ADMIN_SECRET     # 可选
 2. Vercel 项目环境变量：
    - `UPSTASH_REDIS_REST_URL`
    - `UPSTASH_REDIS_REST_TOKEN`
-   - 可选 `SITE_TOKEN`、`CORS_ORIGIN`
+   - 访问控制：`SITE_PASSWORD`、`EDIT_TOKEN`、`AUTH_SECRET`（均可选）
+   - 旧版兼容：`SITE_TOKEN`；跨域：`CORS_ORIGIN`
    - 管理后台：`ADMIN_PASSWORD`（必需）、`ADMIN_SECRET`（可选）
 3. 直接导入仓库，`vercel.json` 已配置构建与 SPA 重写
 
@@ -295,11 +344,14 @@ noise-session-config          → { sessions: [{ name, start, duration, enabled 
 ```
 __admin-logs                  → 最近 500 条审计日志（新→旧）
 __admin-guard                 → 管理登录失败限流状态（按 IP 哈希）
+__access-guard                → 访问密码失败限流状态（按 IP 哈希）
 ```
 
 ## API 契约
 
 ```
+GET    /api/auth           → 200 { passwordRequired, editRequired, authenticated, editAuthenticated }
+POST   /api/auth           → body { action: "login", password } → 200 { token, expiresAt, ... } | 401 / 429
 GET    /api/kv?key=K       → 200 { key, value, updatedAt } | 404 { error: "not_found" }
 GET    /api/kv?prefix=P    → 200 { keys: [{ key, updatedAt }] }
 PUT    /api/kv             → body { key, value } → 200 { key, updatedAt }
@@ -308,7 +360,13 @@ GET    /api/health         → 200 { ok: true, service: "classworks-lite-kv", ts
 POST   /api/admin          → body { action, ... } → 200 { ... } | 400 / 401 / 409 / 413 / 429 / 503
 ```
 
-- 鉴权：`Authorization: Bearer <SITE_TOKEN>` 或 `X-Site-Key: <SITE_TOKEN>`；未配置则跳过
+- 查看鉴权：配置 `SITE_PASSWORD` 时，`/api/kv` 需要
+  `Authorization: Bearer <登录返回的令牌>`（7 天有效）；未配置时回退到
+  `Authorization: Bearer <SITE_TOKEN>` 或 `X-Site-Key: <SITE_TOKEN>`，都未配置则跳过
+- 编辑鉴权：配置 `EDIT_TOKEN` 时，`PUT` / `DELETE` 还需要
+  `X-Edit-Token: <EDIT_TOKEN>`，缺失或错误返回 403 `edit_token_required`
+- `/api/auth` 登录成功返回 HMAC-SHA256 令牌（`v1.<expiresAt>.<nonce>.<signature>`），
+  同一 IP 连续 5 次密码错误返回 429，锁定 10 分钟
 - 管理接口：除 `login` 外的动作都需要 `Authorization: Bearer <adminToken>`
   （或 `X-Admin-Token`），令牌由 `login` 返回
 - 单条上限 1 MB，键长上限 200 字符
@@ -338,13 +396,15 @@ POST   /api/admin          → body { action, ... } → 200 { ... } | 400 / 401 
 ```
 ├── src/
 │   ├── components/          卡片、对话框、基础控件
+│   │   ├── AccessGate.tsx   全屏访问密码门
 │   │   ├── NoiseMonitorDetail.tsx   噪音详情（实时 / 报告 / 校准）
 │   │   ├── UafTransferDialog.tsx    UAF 导入导出对话框
-│   │   └── settings/               设置卡片、设置项、噪音设置
+│   │   └── settings/               设置卡片、设置项、噪音设置、访问权限
 │   ├── pages/               作业板 / 设置 / 列表 / 考试看板 / 管理后台
 │   ├── lib/
 │   │   ├── store.ts         全局数据中心（作业、出勤、名单、同步）
 │   │   ├── kv.ts            本地 / 云端客户端，含离线队列
+│   │   ├── access.ts        访问令牌、访问状态与编辑令牌
 │   │   ├── admin.ts         管理接口客户端（登录、数据、日志、备份）
 │   │   ├── noise.ts         噪音采集、评分、校准与报告存储
 │   │   ├── uafExport.ts     UAF 校验、预览、导入计划与落盘
@@ -357,15 +417,20 @@ POST   /api/admin          → body { action, ... } → 200 { ... } | 400 / 401 
 │   └── manifest.webmanifest PWA 清单（名称为 ClassworksLite）
 ├── server/
 │   ├── kv-core.ts           与平台无关的 KV 处理器
+│   ├── auth-core.ts         访问密码 / 编辑令牌校验（/api/auth）
+│   ├── token.ts             HMAC 令牌签发与常量时间校验
+│   ├── login-guard.ts       登录失败限流（管理后台与访问密码共用）
 │   ├── admin-core.ts        管理接口（登录、数据管理、备份）
 │   ├── audit.ts             审计日志与客户端信息提取
 │   ├── cloudflare.ts        Cloudflare KV 适配（Worker / Pages 共用）
 │   ├── upstash.ts           Upstash Redis 适配
-│   └── dev-kv-plugin.ts     本地开发用 KV + 管理接口（.data/kv.json）
+│   └── dev-kv-plugin.ts     本地开发用 KV + 访问 / 管理接口（.data/kv.json）
 ├── functions/api/kv.ts      Cloudflare Pages Function
+├── functions/api/auth.ts    Cloudflare Pages 访问接口
 ├── functions/api/admin.ts   Cloudflare Pages 管理 Function
 ├── worker/index.ts          Cloudflare Workers 入口
 ├── api/kv.ts                Vercel Edge Function
+├── api/auth.ts              Vercel Edge 访问接口
 └── api/admin.ts             Vercel Edge 管理 Function
 ```
 

@@ -5,6 +5,7 @@
  * 全局只有一份状态，卡片、工具栏、对话框共享，避免层层透传 props。
  */
 
+import { ACCESS_STATUS_EVENT, isEditLocked } from './access'
 import { DEFAULT_STUDENTS, DEFAULT_SUBJECTS } from './defaults'
 import { isSameDay, toDateKey, today } from './date'
 import { broadcastChange, getClient, refreshClient, syncChannel } from './kv'
@@ -80,7 +81,9 @@ class BoardStore {
   private initialized = false
   private channelBound = false
   private settingsBound = false
+  private accessBound = false
   private settingsTimer: ReturnType<typeof setTimeout> | null = null
+  private readOnlyNoticeAt = 0
 
   state: AppState = {
     status: 'loading',
@@ -142,6 +145,7 @@ class BoardStore {
     this.startPolling()
     this.bindChannel()
     this.bindSettings()
+    this.bindAccess()
 
     if (typeof window !== 'undefined') {
       window.addEventListener('online', this.handleOnline)
@@ -273,7 +277,18 @@ class BoardStore {
   /* 作业编辑                                                          */
   /* ---------------------------------------------------------------- */
 
+  private ensureEditable(): boolean {
+    if (!isEditLocked()) return true
+    const now = Date.now()
+    if (now - this.readOnlyNoticeAt > 3000) {
+      this.readOnlyNoticeAt = now
+      toast.warning('只读模式', '请在 设置 → 服务器 → 访问权限 中填写编辑令牌')
+    }
+    return false
+  }
+
   private commitBoard(next: BoardData) {
+    if (!this.ensureEditable()) return
     this.patch({ board: next, dirty: true })
     this.scheduleSave()
   }
@@ -332,6 +347,7 @@ class BoardStore {
 
   /** 把当前日期的作业复制到今天（只补空缺，不覆盖已有内容） */
   async copyToToday(): Promise<number> {
+    if (!this.ensureEditable()) return 0
     const targetDate = today()
     const targetKey = toDateKey(targetDate)
     if (targetKey === this.state.dateKey) return 0
@@ -432,6 +448,7 @@ class BoardStore {
       if (!opts.silent) toast.info('无需保存', '当前没有改动')
       return true
     }
+    if (!this.ensureEditable()) return false
 
     // 历史数据保存确认统一在这里做，所有入口（首页上传/出勤完成/列表保存/设置立即上传）都不会绕过（F5）
     if (
@@ -480,6 +497,7 @@ class BoardStore {
   /* ---------------------------------------------------------------- */
 
   async setStudents(names: string[]) {
+    if (!this.ensureEditable()) return
     const clean = Array.from(new Set(names.map((n) => n.trim()).filter(Boolean)))
     this.patch({ students: clean })
     const { queued } = await getClient().set(
@@ -491,6 +509,7 @@ class BoardStore {
   }
 
   async setSubjects(subjects: Subject[]) {
+    if (!this.ensureEditable()) return { renamed: 0, queued: false }
     const previous = this.state.subjects.map((item) => item.name)
     const clean = subjects
       .map((s, index) => ({ name: s.name.trim(), order: index }))
@@ -523,6 +542,7 @@ class BoardStore {
    * 返回实际迁移的日期数量。
    */
   async renameSubject(from: string, to: string): Promise<number> {
+    if (!this.ensureEditable()) return 0
     const target = to.trim()
     if (!from || !target || target === from) return 0
     const client = getClient()
@@ -560,6 +580,7 @@ class BoardStore {
   }
 
   async saveExam(exam: ExamConfig) {
+    if (!this.ensureEditable()) return
     const exists = this.state.exams.some((item) => item.id === exam.id)
     const next = exists
       ? this.state.exams.map((item) => (item.id === exam.id ? exam : item))
@@ -571,6 +592,7 @@ class BoardStore {
   }
 
   async deleteExam(id: string) {
+    if (!this.ensureEditable()) return
     const next = this.state.exams.filter((item) => item.id !== id)
     this.patch({ exams: next })
     await getClient().set(KEYS.exams, next)
@@ -659,6 +681,21 @@ class BoardStore {
     })
   }
 
+  /** 访问状态变化：获得编辑权限后补存本地改动，被锁定时停止自动保存 */
+  private bindAccess() {
+    if (this.accessBound) return
+    this.accessBound = true
+    window.addEventListener(ACCESS_STATUS_EVENT, this.handleAccessStatus)
+  }
+
+  private handleAccessStatus = () => {
+    if (isEditLocked()) {
+      this.flushPendingSave()
+      return
+    }
+    if (this.state.dirty && !this.state.saving) this.scheduleSave()
+  }
+
   private handleOnline = async () => {
     this.patch({ offline: false })
     const flushed = await getClient().flush()
@@ -733,6 +770,7 @@ class BoardStore {
     if (typeof window !== 'undefined') {
       window.removeEventListener('online', this.handleOnline)
       window.removeEventListener('offline', this.handleOffline)
+      window.removeEventListener(ACCESS_STATUS_EVENT, this.handleAccessStatus)
       document.removeEventListener('visibilitychange', this.handleVisibility)
     }
     this.initialized = false

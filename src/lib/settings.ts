@@ -30,6 +30,8 @@ export interface SettingDef {
   label: string
   hint?: string
   group: SettingGroup
+  /** 输入框显示为密码 */
+  secret?: boolean
   /** 仅开发者模式可见 */
   developer?: boolean
   min?: number
@@ -385,7 +387,17 @@ export const SETTING_DEFS: Record<string, SettingDef> = {
     type: 'string',
     default: '',
     label: '网站令牌',
+    hint: '服务端使用旧版 SITE_TOKEN 时填写；启用访问密码后由登录自动获取，无需再填。',
     group: 'server',
+    secret: true,
+  },
+  'server.editToken': {
+    type: 'string',
+    default: '',
+    label: '编辑令牌',
+    hint: '填写服务端配置的 EDIT_TOKEN 后才可以修改作业；留空时只读。',
+    group: 'server',
+    secret: true,
   },
   'server.classNumber': {
     type: 'string',
