@@ -11,12 +11,22 @@ const KIND_META: Record<AttendanceKind, { label: string; color: string; bg: stri
   exclude: { label: '不参与', color: 'rgb(var(--v-theme-grey))', bg: 'rgba(var(--v-theme-surface-variant), 0.5)' },
 }
 
+/** 历史看板可能保留已从花名册删除的姓名，展示时按当前名单过滤 */
+function visibleAttendance(students: string[], attendance: { absent: string[]; late: string[]; exclude: string[] }) {
+  const names = new Set(students)
+  return {
+    absent: attendance.absent.filter((name) => names.has(name)),
+    late: attendance.late.filter((name) => names.has(name)),
+    exclude: attendance.exclude.filter((name) => names.has(name)),
+  }
+}
+
 export function useAttendanceSummary() {
   const state = useAppState()
   const [lateCounts] = useSetting<boolean>('display.lateStudentsArePresent')
   return useMemo(
-    () => attendanceStats(state.board, state.students.length),
-    [state.board, state.students.length, lateCounts],
+    () => attendanceStats(state.board, state.students),
+    [state.board, state.students, lateCounts],
   )
 }
 
@@ -24,7 +34,7 @@ export function useAttendanceSummary() {
 export function AttendanceSidebar({ onOpen }: { onOpen: () => void }) {
   const state = useAppState()
   const stats = useAttendanceSummary()
-  const { absent, late, exclude } = state.board.attendance
+  const { absent, late, exclude } = visibleAttendance(state.students, state.board.attendance)
   const lgAndUp = useMediaQuery('(min-width: 1280px)')
 
   return (
@@ -76,7 +86,7 @@ export function AttendanceSidebar({ onOpen }: { onOpen: () => void }) {
 export function AttendanceCard({ onOpen }: { onOpen: () => void }) {
   const state = useAppState()
   const stats = useAttendanceSummary()
-  const { absent, late, exclude } = state.board.attendance
+  const { absent, late, exclude } = visibleAttendance(state.students, state.board.attendance)
 
   return (
     <article className="v-card border rounded-xl glow-track cursor-pointer" onClick={onOpen}>
@@ -179,8 +189,7 @@ export function AttendanceDialog({
       return
     }
     if (kind === 'reset') {
-      store.clearAttendance()
-      toast.success('已重置', '全员出席')
+      if (store.clearAttendance()) toast.success('已重置', '全员出席')
       return
     }
     store.setAttendance(kind, state.students)
@@ -209,8 +218,8 @@ export function AttendanceDialog({
             type="button"
             className="btn btn-primary"
             onClick={async () => {
-              await store.save({ silent: true })
-              onClose()
+              const saved = await store.save({ silent: true })
+              if (saved) onClose()
             }}
           >
             完成

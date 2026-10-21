@@ -1,18 +1,30 @@
 /* ClassworksLite Service Worker
  * 策略：
  *  - 导航请求：network-first，失败回退到缓存的应用外壳（离线可用）
- *  - 静态资源：cache-first（构建产物带 hash，可长期缓存）；/uaf/ 字体与 wasm 同样入缓存
+ *  - 静态资源：cache-first（构建产物带 hash，可长期缓存）
  *  - /api/：完全不缓存，保证数据一致性
- *
- * 首次安装时会读取应用外壳 HTML，把其中引用的 /assets/ 入口 JS/CSS 一并预缓存，
- * 这样「首次访问后断网重开」也能拿到完整资源。
+ *  - 字体（含 MDI 图标字体）也缓存，保证离线时图标不缺失
  */
 
-const VERSION = 'v2'
-const SHELL_CACHE = `classworks-shell-${VERSION}`
-const ASSET_CACHE = `classworks-assets-${VERSION}`
-const SHELL_URL = '/index.html'
-const STATIC_PREFIXES = ['/assets/', '/uaf/', '/icons/']
+const VERSION = 'v4'
+const CACHE_PREFIX = 'classworks-'
+const SHELL_CACHE = `${CACHE_PREFIX}shell-${VERSION}`
+const ASSET_CACHE = `${CACHE_PREFIX}assets-${VERSION}`
+
+const SCOPE = self.registration.scope
+const scopedPath = (path) => new URL(path, SCOPE).pathname
+const SHELL_URL = scopedPath('index.html')
+const MANIFEST_URL = scopedPath('manifest.webmanifest')
+const FAVICON_URL = scopedPath('favicon.svg')
+const MDI_FONT_URL = scopedPath('fonts/mdi-subset.woff')
+const ASSET_PREFIX = scopedPath('assets/')
+const ICON_PREFIX = scopedPath('icons/')
+const STATIC_PREFIXES = [
+  ASSET_PREFIX,
+  scopedPath('uaf/'),
+  ICON_PREFIX,
+  scopedPath('fonts/'),
+]
 
 function isStaticAsset(pathname) {
   return STATIC_PREFIXES.some((prefix) => pathname.startsWith(prefix))
@@ -25,7 +37,7 @@ function extractEntryAssets(html) {
   let match = pattern.exec(html)
   while (match) {
     const value = match[1]
-    if (value.startsWith('/assets/') || value.startsWith('/icons/')) urls.add(value)
+    if (value.startsWith(ASSET_PREFIX) || value.startsWith(ICON_PREFIX)) urls.add(value)
     pattern.lastIndex = match.index + match[0].length
     match = pattern.exec(html)
   }
@@ -52,7 +64,11 @@ async function precacheAgainst(cache, urls) {
 
 async function precacheShell() {
   const cache = await caches.open(SHELL_CACHE)
-  await cache.addAll([SHELL_URL, '/manifest.webmanifest', '/favicon.svg'])
+  await precacheAgainst(cache, [SHELL_URL, MANIFEST_URL, FAVICON_URL])
+
+  // 图标字体通过 CSS 引用，不会出现在 HTML 的 src/href 中，需要显式预缓存
+  const assetCache = await caches.open(ASSET_CACHE)
+  await precacheAgainst(assetCache, [MDI_FONT_URL])
 
   // 读取真实外壳，补上首屏 JS/CSS（构建产物文件名带 hash，只能从 HTML 里发现）
   try {
@@ -62,7 +78,6 @@ async function precacheShell() {
     await cache.put(SHELL_URL, response)
     const entries = extractEntryAssets(html)
     if (entries.length > 0) {
-      const assetCache = await caches.open(ASSET_CACHE)
       await precacheAgainst(assetCache, entries)
     }
   } catch {
@@ -71,11 +86,8 @@ async function precacheShell() {
 }
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(
-    precacheShell()
-      .catch(() => undefined)
-      .then(() => self.skipWaiting()),
-  )
+  // 不使用 skipWaiting：等待旧标签页关闭后再激活，避免旧页面动态加载的懒加载 chunk 失效
+  event.waitUntil(precacheShell().catch(() => undefined))
 })
 
 self.addEventListener('activate', (event) => {
@@ -85,7 +97,12 @@ self.addEventListener('activate', (event) => {
       .then((keys) =>
         Promise.all(
           keys
-            .filter((key) => key !== SHELL_CACHE && key !== ASSET_CACHE)
+            .filter(
+              (key) =>
+                key.startsWith(CACHE_PREFIX) &&
+                key !== SHELL_CACHE &&
+                key !== ASSET_CACHE,
+            )
             .map((key) => caches.delete(key)),
         ),
       )
@@ -99,25 +116,28 @@ self.addEventListener('fetch', (event) => {
 
   const url = new URL(request.url)
   if (url.origin !== self.location.origin) return
+  // 应用的数据接口固定在站点根 /api/（与 src/lib/kv.ts 一致）
   if (url.pathname.startsWith('/api/')) return
 
   if (request.mode === 'navigate') {
     event.respondWith(
       fetch(request)
         .then((response) => {
-          const copy = response.clone()
-          caches.open(SHELL_CACHE).then((cache) => cache.put(SHELL_URL, copy))
-          // 首次上线访问时顺便补齐入口资源，降低后续离线重开缺资源的概率
-          response
-            .clone()
-            .text()
-            .then(async (html) => {
-              const entries = extractEntryAssets(html)
-              if (entries.length === 0) return
-              const assetCache = await caches.open(ASSET_CACHE)
-              await precacheAgainst(assetCache, entries)
-            })
-            .catch(() => undefined)
+          const contentType = response.headers.get('content-type') || ''
+          if (response.ok && contentType.includes('text/html')) {
+            const copy = response.clone()
+            caches.open(SHELL_CACHE).then((cache) => cache.put(SHELL_URL, copy)).catch(() => undefined)
+            response
+              .clone()
+              .text()
+              .then(async (html) => {
+                const entries = extractEntryAssets(html)
+                if (entries.length === 0) return
+                const assetCache = await caches.open(ASSET_CACHE)
+                await precacheAgainst(assetCache, entries)
+              })
+              .catch(() => undefined)
+          }
           return response
         })
         .catch(async () => {
@@ -140,7 +160,10 @@ self.addEventListener('fetch', (event) => {
       return fetch(request).then((response) => {
         if (response.ok && isStaticAsset(url.pathname)) {
           const copy = response.clone()
-          caches.open(ASSET_CACHE).then((cache) => cache.put(request, copy))
+          caches
+            .open(ASSET_CACHE)
+            .then((cache) => cache.put(request, copy))
+            .catch(() => undefined)
         }
         return response
       })

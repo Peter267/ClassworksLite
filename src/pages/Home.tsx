@@ -10,7 +10,7 @@ import { RandomPicker } from '../components/RandomPicker'
 import { StudentsDialog, SubjectsDialog } from '../components/PeopleDialogs'
 import { TimeCard } from '../components/TimeCard'
 import { UafTransferDialog } from '../components/UafTransferDialog'
-import { isSameDay, relativeDayLabel, today } from '../lib/date'
+import { isPastDay, isSameDay, relativeDayLabel, today } from '../lib/date'
 import { useAppState, useMediaQuery, useMasonry, useSetting } from '../lib/hooks'
 import { store } from '../lib/store'
 import { toast } from '../lib/toast'
@@ -49,6 +49,7 @@ export function Home({
   const [showUaf] = useSetting<boolean>('display.showUafTransfer')
   const [showFullscreen] = useSetting<boolean>('display.showFullscreenButton')
   const [randomEnabled] = useSetting<boolean>('randomPicker.enabled')
+  const [showRandomButton] = useSetting<boolean>('display.showRandomButton')
   const [blockPast] = useSetting<boolean>('edit.blockPastDataEdit')
   const [devMode] = useSetting<boolean>('developer.enabled')
   const [showTestCard] = useSetting<boolean>('developer.showTestCard')
@@ -77,7 +78,11 @@ export function Home({
   const [examDialog, setExamDialog] = useState<string | null>(null)
 
   const isToday = isSameDay(state.date, today())
-  const editBlocked = !isToday && blockPast
+  const isPast = isPastDay(state.date)
+  const dataReady = state.status === 'ready' && state.loaded
+  const editBlocked = isPast && blockPast
+  const blockEditing = editBlocked || !dataReady
+  const randomPickVisible = randomEnabled && showRandomButton
 
   useEffect(() => {
     document.title = `${className} - ${isToday ? '今天的作业' : `${relativeDayLabel(state.date)}的作业`} · ClassworksLite`
@@ -146,6 +151,10 @@ export function Home({
   /* ---------------- 编辑 ---------------- */
   const openSubject = useCallback(
     (name: string) => {
+      if (!dataReady) {
+        toast.error('数据尚未加载完成', '请刷新并成功加载后再编辑')
+        return
+      }
       if (editBlocked) {
         toast.warning('无法编辑', '设置中已禁止编辑历史数据')
         return
@@ -157,11 +166,15 @@ export function Home({
         content: state.board.homework[name]?.content ?? '',
       })
     },
-    [editBlocked, state.board.homework],
+    [dataReady, editBlocked, state.board.homework],
   )
 
   const openCustom = useCallback(
     (key: string) => {
+      if (!dataReady) {
+        toast.error('数据尚未加载完成', '请刷新并成功加载后再编辑')
+        return
+      }
       if (editBlocked) {
         toast.warning('无法编辑', '设置中已禁止编辑历史数据')
         return
@@ -174,7 +187,7 @@ export function Home({
         content: item?.content ?? '',
       })
     },
-    [editBlocked, state.board.homework],
+    [dataReady, editBlocked, state.board.homework],
   )
 
   useEffect(() => {
@@ -294,7 +307,7 @@ export function Home({
                           content={item.content}
                           custom={item.kind === 'custom'}
                           highlighted={highlight[item.key]}
-                          disabled={editBlocked}
+                          disabled={blockEditing}
                           onOpen={() =>
                             item.kind === 'custom' ? openCustom(item.key) : openSubject(item.name)
                           }
@@ -318,7 +331,7 @@ export function Home({
                           key={subject.name}
                           name={subject.name}
                           variant="chip"
-                          disabled={editBlocked}
+                          disabled={blockEditing}
                           onOpen={() => openSubject(subject.name)}
                         />
                       ))}
@@ -330,7 +343,7 @@ export function Home({
                           key={subject.name}
                           name={subject.name}
                           variant="button"
-                          disabled={editBlocked}
+                          disabled={blockEditing}
                           onOpen={() => openSubject(subject.name)}
                         />
                       ))}
@@ -342,7 +355,7 @@ export function Home({
                           key={subject.name}
                           name={subject.name}
                           variant="card"
-                          disabled={editBlocked}
+                          disabled={blockEditing}
                           onOpen={() => openSubject(subject.name)}
                         />
                       ))}
@@ -415,7 +428,7 @@ export function Home({
                     </button>
                   )}
 
-                  {randomEnabled && (
+                  {randomPickVisible && (
                     <button
                       type="button"
                       className="v-btn v-btn--size-large"
@@ -458,12 +471,14 @@ export function Home({
                       className="v-btn v-btn--size-large"
                       data-color="purple"
                       onClick={() => {
-                        if (editBlocked) {
-                          toast.warning('无法编辑', '设置中已禁止编辑历史数据')
+                        if (blockEditing) {
+                          toast.warning('无法编辑', !dataReady ? '数据尚未加载完成' : '设置中已禁止编辑历史数据')
                           return
                         }
                         const key = store.addCustomCard('测试卡片', '')
-                        setEditing({ kind: 'custom', key, name: '测试卡片', content: '' })
+                        if (key) {
+                          setEditing({ kind: 'custom', key, name: '测试卡片', content: '' })
+                        }
                       }}
                     >
                       <Icon name="testTube" size={20} />
@@ -511,22 +526,24 @@ export function Home({
         title={editing?.name ?? ''}
         initialContent={editing?.content ?? ''}
         date={state.date}
-        isPast={!isToday}
+        isPast={isPast}
         custom={editing?.kind === 'custom'}
-        onRename={(name) => editing && store.renameCustomCard(editing.key, name)}
-        onDelete={() => editing && store.removeHomework(editing.key)}
-        onSave={(content) => {
-          if (!editing) return
-          store.setHomework(editing.key, content)
-        }}
+        onRename={(name) => (editing ? store.renameCustomCard(editing.key, name) : false)}
+        onDelete={() => (editing ? store.removeHomework(editing.key) : false)}
+        onSave={(content) => (editing ? store.setHomework(editing.key, content) : false)}
         onClose={() => setEditing(null)}
       />
 
       <AttendanceDialog
         open={attendanceOpen}
         onClose={() => setAttendanceOpen(false)}
-        canEdit={!editBlocked}
-        onBlocked={() => toast.warning('无法编辑', '设置中已禁止编辑历史数据')}
+        canEdit={!blockEditing}
+        onBlocked={() =>
+          toast.warning(
+            '无法编辑',
+            !dataReady ? '数据尚未加载完成' : '设置中已禁止编辑历史数据',
+          )
+        }
       />
 
       <StudentsDialog open={studentsOpen} onClose={() => setStudentsOpen(false)} />
@@ -543,14 +560,20 @@ export function Home({
             onNavigate('exams')
           }}
           onRemove={() => {
-            if (editBlocked) {
-              toast.warning('无法编辑', '设置中已禁止编辑历史数据')
+            if (blockEditing) {
+              toast.warning('无法编辑', !dataReady ? '数据尚未加载完成' : '设置中已禁止编辑历史数据')
               setExamDialog(null)
               return
             }
             const exam = examMap.get(examDialog)
-            if (exam) store.addExamCard(exam.id)
-            setExamDialog(null)
+            if (!exam && !state.catalogLoaded) {
+              toast.error('考试配置尚未加载', '无法确认考试是否已删除，请刷新后再移除卡片')
+              return
+            }
+            const ok = exam
+              ? store.addExamCard(exam.id).ok
+              : store.removeHomework(`exam-${examDialog}`)
+            if (ok) setExamDialog(null)
           }}
         />
       )}
@@ -581,8 +604,13 @@ function HomeSkeleton() {
 function ConciseExamCard({ exam, onOpen }: { exam?: ExamConfig; onOpen: () => void }) {
   if (!exam) {
     return (
-      <article className="v-card border rounded-xl" style={{ padding: 16 }}>
+      <article
+        className="v-card border rounded-xl hover-card cursor-pointer"
+        style={{ padding: 16 }}
+        onClick={onOpen}
+      >
         <div className="text-caption text-grey">考试配置已删除</div>
+        <div className="text-caption text-error mt-1">点击移除这张卡片</div>
       </article>
     )
   }

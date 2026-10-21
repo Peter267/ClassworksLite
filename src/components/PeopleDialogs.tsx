@@ -49,12 +49,12 @@ export function StudentsDialog({ open, onClose }: { open: boolean; onClose: () =
   const add = () => {
     const names = parseNames(draft)
     if (names.length === 0) return
-    void store.setStudents([...state.students, ...names])
+    void store.addStudents(names)
     setDraft('')
   }
 
   const remove = (name: string) => {
-    void store.setStudents(state.students.filter((item) => item !== name))
+    void store.removeStudent(name)
   }
 
   return (
@@ -81,27 +81,30 @@ export function StudentsDialog({ open, onClose }: { open: boolean; onClose: () =
               type="button"
               className="btn btn-primary"
               onClick={() => {
-                const names = parseNames(bulkText)
-                if (names.length === 0) {
-                  toast.warning('名单为空', '至少保留一位学生')
-                  return
-                }
-                // 只应用批量文本相对基准的增删，保留弹窗内其它入口刚做的修改
-                const base = bulkBase.current
-                const current = state.students
-                const removed = new Set(base.filter((name) => !names.includes(name)))
-                const merged = current.filter((name) => !removed.has(name))
-                for (const name of names) {
-                  if (!merged.includes(name)) merged.push(name)
-                }
-                if (merged.length === 0) {
-                  toast.warning('名单为空', '至少保留一位学生')
-                  return
-                }
-                void store.setStudents(merged)
-                bulkBase.current = merged
-                setMode('list')
-                toast.success('已保存', `共 ${merged.length} 人`)
+                void (async () => {
+                  const names = parseNames(bulkText)
+                  if (names.length === 0) {
+                    toast.warning('名单为空', '至少保留一位学生')
+                    return
+                  }
+                  // 只应用批量文本相对基准的增删，保留弹窗内其它入口刚做的修改
+                  const base = bulkBase.current
+                  const current = state.students
+                  const removed = new Set(base.filter((name) => !names.includes(name)))
+                  const merged = current.filter((name) => !removed.has(name))
+                  for (const name of names) {
+                    if (!merged.includes(name)) merged.push(name)
+                  }
+                  if (merged.length === 0) {
+                    toast.warning('名单为空', '至少保留一位学生')
+                    return
+                  }
+                  const saved = await store.setStudents(merged)
+                  if (!saved) return
+                  bulkBase.current = merged
+                  setMode('list')
+                  toast.success('已保存', `共 ${merged.length} 人`)
+                })()
               }}
             >
               保存名单
@@ -203,6 +206,8 @@ interface SubjectDraft {
   /** 稳定 key：改名时输入框不会因 key 变化而重建 */
   id: string
   name: string
+  /** 打开弹窗时的名字，用于明确计算改名映射，而不是按数组位置猜测 */
+  originalName?: string
 }
 
 let subjectSeq = 0
@@ -215,13 +220,16 @@ export function SubjectsDialog({ open, onClose }: { open: boolean; onClose: () =
   const state = useAppState()
   const [items, setItems] = useState<SubjectDraft[]>([])
   const [draft, setDraft] = useState('')
+  const originalNames = useRef<string[]>([])
 
   useEffect(() => {
     if (open) {
+      originalNames.current = state.subjects.map((subject) => subject.name)
       setItems(
         state.subjects.map((subject) => ({
           id: nextSubjectId(),
           name: subject.name,
+          originalName: subject.name,
         })),
       )
       setDraft('')
@@ -268,14 +276,32 @@ export function SubjectsDialog({ open, onClose }: { open: boolean; onClose: () =
       toast.warning('科目名称重复', [...new Set(duplicated)].join('、'))
       return
     }
-    // setSubjects 会按「同位置改名」自动迁移历史作业键
-    const { renamed } = await store.setSubjects(
+
+    const original = new Set(originalNames.current)
+    const renames: { from: string; to: string }[] = []
+    for (const item of clean) {
+      if (!item.originalName || item.originalName === item.name) continue
+      // 旧名仍被其他科目使用，或目标名原本属于另一个科目：无法安全推断改名/合并
+      if (names.includes(item.originalName) || original.has(item.name)) {
+        toast.warning(
+          '无法自动迁移历史作业',
+          `“${item.originalName}”与“${item.name}”存在名称交叉，请分步改名`,
+        )
+        return
+      }
+      renames.push({ from: item.originalName, to: item.name })
+    }
+
+    const result = await store.setSubjects(
       clean.map((item, index) => ({ name: item.name, order: index })),
+      { renames },
     )
+    if (!result.saved) return
+
     toast.success(
       '已保存',
-      renamed > 0
-        ? `共 ${clean.length} 个科目，已迁移 ${renamed} 项改名`
+      result.renamed > 0
+        ? `共 ${clean.length} 个科目，已迁移 ${result.renamed} 个日期的作业`
         : `共 ${clean.length} 个科目`,
     )
     onClose()

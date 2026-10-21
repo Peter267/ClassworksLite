@@ -28,6 +28,15 @@ export interface LoginGuard {
 
 const encoder = new TextEncoder()
 
+/** 同一实例内串行化读改写，降低并发失败尝试被少计的概率 */
+let guardQueue: Promise<unknown> = Promise.resolve()
+
+function serialize<T>(task: () => Promise<T>): Promise<T> {
+  const next = guardQueue.then(task, task)
+  guardQueue = next.catch(() => undefined)
+  return next
+}
+
 async function ipKey(ip: string): Promise<string> {
   const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', encoder.encode(ip)))
   return Array.from(digest.slice(0, 8), (b) => b.toString(16).padStart(2, '0')).join('')
@@ -78,25 +87,29 @@ export function createLoginGuard(
     },
 
     async fail(ip) {
-      const key = await ipKey(ip)
-      const guard = await readGuard(backend, storageKey)
-      const now = Date.now()
-      const current = guard[key]
-      const next: GuardEntry =
-        current && now - current.first < lockMs ? current : { n: 0, first: now, until: 0 }
-      next.n += 1
-      if (next.n >= limit) next.until = now + lockMs
-      guard[key] = next
-      await writeGuard(backend, storageKey, guard)
-      return next.until > now ? Math.ceil((next.until - now) / 60_000) : 0
+      return serialize(async () => {
+        const key = await ipKey(ip)
+        const guard = await readGuard(backend, storageKey)
+        const now = Date.now()
+        const current = guard[key]
+        const next: GuardEntry =
+          current && now - current.first < lockMs ? current : { n: 0, first: now, until: 0 }
+        next.n += 1
+        if (next.n >= limit) next.until = now + lockMs
+        guard[key] = next
+        await writeGuard(backend, storageKey, guard)
+        return next.until > now ? Math.ceil((next.until - now) / 60_000) : 0
+      })
     },
 
     async reset(ip) {
-      const key = await ipKey(ip)
-      const guard = await readGuard(backend, storageKey)
-      if (!guard[key]) return
-      delete guard[key]
-      await writeGuard(backend, storageKey, guard)
+      return serialize(async () => {
+        const key = await ipKey(ip)
+        const guard = await readGuard(backend, storageKey)
+        if (!guard[key]) return
+        delete guard[key]
+        await writeGuard(backend, storageKey, guard)
+      })
     },
   }
 }

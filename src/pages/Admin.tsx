@@ -132,6 +132,7 @@ export function AdminPage({ onBack }: { onBack: () => void }) {
 
   const [stats, setStats] = useState<AdminStats | null>(null)
   const [keys, setKeys] = useState<AdminKeyInfo[] | null>(null)
+  const [keysTruncated, setKeysTruncated] = useState(false)
   const [logs, setLogs] = useState<Awaited<ReturnType<typeof adminApi.logs>>['logs'] | null>(null)
   const [logLimit, setLogLimit] = useState(500)
 
@@ -170,11 +171,25 @@ export function AdminPage({ onBack }: { onBack: () => void }) {
       if (!token) return
       if (withBusy) setBusy(true)
       try {
-        const [statsResult, logsResult] = await Promise.all([
-          adminApi.stats(token),
-          adminApi.logs(token),
-        ])
-        setStats(statsResult)
+        let overview: Awaited<ReturnType<typeof adminApi.overview>>
+        try {
+          overview = await adminApi.overview(token)
+        } catch (err) {
+          // 兼容尚未部署 overview 动作的旧后端
+          if (err instanceof AdminError && err.status === 400) {
+            const [stats, keys] = await Promise.all([
+              adminApi.stats(token),
+              adminApi.keys(token),
+            ])
+            overview = { stats, keys: keys.keys, truncated: keys.truncated }
+          } else {
+            throw err
+          }
+        }
+        const logsResult = await adminApi.logs(token)
+        setStats(overview.stats)
+        setKeys(overview.keys)
+        setKeysTruncated(overview.truncated)
         setLogs(logsResult.logs)
         setLogLimit(logsResult.limit)
       } catch (err) {
@@ -193,6 +208,7 @@ export function AdminPage({ onBack }: { onBack: () => void }) {
       try {
         const result = await adminApi.keys(token)
         setKeys(result.keys)
+        setKeysTruncated(result.truncated)
       } catch (err) {
         if (!handleAuthError(err)) toast.error('加载数据失败', errorMessage(err))
       } finally {
@@ -812,6 +828,15 @@ export function AdminPage({ onBack }: { onBack: () => void }) {
                   </button>
                 </div>
               </div>
+
+              {keysTruncated && (
+                <div className="v-alert v-alert--variant-tonal mb-3" data-color="warning">
+                  <MdiIcon name="alert-circle-outline" size={20} />
+                  <div>
+                    数据键超过服务端单次读取上限，当前列表/备份不完整。请先清理或分批导出。
+                  </div>
+                </div>
+              )}
 
               <section className="v-card admin-card admin-table-card">
                 <div className="admin-table-head">

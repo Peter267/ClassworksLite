@@ -1,4 +1,5 @@
 import { useState, useSyncExternalStore } from 'react'
+import { Icon } from '../Icon'
 import { MdiIcon } from '../MdiIcon'
 import { SettingsCard } from './SettingsCard'
 import { SettingItem } from './SettingItem'
@@ -9,6 +10,7 @@ import {
   subscribeAccess,
 } from '../../lib/access'
 import { useSetting } from '../../lib/hooks'
+import { settings } from '../../lib/settings'
 import { toast } from '../../lib/toast'
 
 export function AccessSettingsCard() {
@@ -49,6 +51,10 @@ export function AccessSettingsCard() {
   function logout() {
     if (!window.confirm('退出访问后需要重新输入访问密码，确定继续吗？')) return
     clearAccessToken()
+    // 旧版静态令牌也属于访问凭证，不清掉会导致“退出”后仍然免密进入
+    if (settings.get<string>('server.siteKey').trim()) {
+      settings.set('server.siteKey', '')
+    }
     toast.success('已退出访问', '正在刷新…')
     window.setTimeout(() => window.location.reload(), 400)
   }
@@ -145,7 +151,7 @@ export function AccessSettingsCard() {
             className="v-btn v-btn--size-small v-btn--variant-outlined"
             onClick={logout}
           >
-            <MdiIcon name="logout" size={18} />
+            <Icon name="external" size={18} />
             退出访问
           </button>
         )}

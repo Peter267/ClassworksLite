@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Icon } from './Icon'
 import { Modal } from './ui/Modal'
-import { NoiseMonitorDetail, type MicPermissionState } from './NoiseMonitorDetail'
+import { NoiseMonitorDetail } from './NoiseMonitorDetail'
 import { dayProgress, longDate, periodOfDay, weekdayLabel } from '../lib/date'
 import { useNow, useSetting } from '../lib/hooks'
 import { getClient } from '../lib/kv'
 import {
   noiseService,
+  type MicPermissionState,
   type NoiseScoreDetail,
+  type NoiseSessionConfig,
   type NoiseSlice,
   type NoiseStatus,
 } from '../lib/noise'
@@ -72,46 +74,10 @@ const COUNTDOWN_PRESETS = [
   { label: '1 小时', seconds: 3600 },
 ]
 
-interface NoiseSession {
-  name: string
-  start: string
-  duration: number
-  enabled: boolean
-}
-
-interface NoiseSessionConfig {
-  sessions: NoiseSession[]
-  alertThresholdDb: number
-}
-
-const DEFAULT_SESSIONS: NoiseSession[] = [
-  { name: '第1节晚自习', start: '19:20', duration: 70, enabled: true },
+const DEFAULT_SESSIONS: NoiseSessionConfig['sessions'] = [
+  { name: '第1节晚自习', start: '19:20', duration: 60, enabled: true },
   { name: '第2节晚自习', start: '20:20', duration: 110, enabled: true },
 ]
-
-function activeSession(config: NoiseSessionConfig | null): NoiseSession | null {
-  if (!config?.sessions) return null
-  const now = new Date()
-  const minutes = now.getHours() * 60 + now.getMinutes()
-  let matched: NoiseSession | null = null
-  let matchedStart = -1
-  for (const session of config.sessions) {
-    if (!session.enabled || !session.start) continue
-    const [h, m] = session.start.split(':').map(Number)
-    if (!Number.isFinite(h) || !Number.isFinite(m)) continue
-    const start = h * 60 + m
-    const duration = session.duration || 0
-    if (duration <= 0) continue
-    // 用环形偏移判断，支持 23:30 开始、跨到次日 00:30 的时段（F15）
-    const offset = (minutes - start + 1440) % 1440
-    if (offset < duration && start > matchedStart) {
-      matched = session
-      matchedStart = start
-    }
-  }
-  // 时段重叠时取开始时间最晚的一段（更贴近“当前这一节”）
-  return matched
-}
 
 async function checkMicPermission(): Promise<MicPermissionState> {
   try {
@@ -119,11 +85,14 @@ async function checkMicPermission(): Promise<MicPermissionState> {
       const devices = await navigator.mediaDevices.enumerateDevices()
       if (!devices.some((device) => device.kind === 'audioinput')) return 'unavailable'
     }
-    if (!navigator.permissions?.query) return 'granted'
+    if (!navigator.permissions?.query) {
+      // Safari/部分浏览器不支持查询麦克风权限，用上次成功授权的结果兜底
+      return settings.get<boolean>('noiseMonitor.micGranted') ? 'granted' : 'prompt'
+    }
     const result = await navigator.permissions.query({ name: 'microphone' as PermissionName })
     return result.state as MicPermissionState
   } catch {
-    return 'prompt'
+    return settings.get<boolean>('noiseMonitor.micGranted') ? 'granted' : 'prompt'
   }
 }
 
@@ -140,16 +109,13 @@ export function TimeCard() {
   )
   const [permissionOpen, setPermissionOpen] = useState(false)
   const [micPermissionState, setMicPermissionState] = useState<MicPermissionState>('')
-  const [status, setStatus] = useState<NoiseStatus>('initializing')
-  const [monitoring, setMonitoring] = useState(false)
+  const [status, setStatus] = useState<NoiseStatus>(() => noiseService.getStatus())
   const [displayDb, setDisplayDb] = useState(0)
   const [ringBuffer, setRingBuffer] = useState<NoiseSlice[]>([])
   const [score, setScore] = useState<number | null>(null)
   const [scoreDetail, setScoreDetail] = useState<NoiseScoreDetail | null>(null)
   const [sessionConfig, setSessionConfig] = useState<NoiseSessionConfig | null>(null)
-  const [sessionName, setSessionName] = useState('自由监测')
-  const unsubscribeRef = useRef<null | (() => void)>(null)
-  const sessionRef = useRef<NoiseSession | null>(null)
+  const monitoring = status === 'active'
 
   const hours = now.getHours()
   const displayHour = use12h ? hours % 12 || 12 : hours
@@ -157,58 +123,68 @@ export function TimeCard() {
   const ampm = hours < 12 ? 'AM' : 'PM'
 
   const stopNoise = useCallback(() => {
-    unsubscribeRef.current?.()
-    unsubscribeRef.current = null
-    noiseService.stop()
-    setMonitoring(false)
-    setStatus('paused')
-    setScore(null)
-    setScoreDetail(null)
-    setRingBuffer([])
-    setDisplayDb(0)
+    noiseService.stop({ manual: true })
   }, [])
 
   const startNoise = useCallback(async () => {
     try {
-      // 每次启动都按最新配置判断当前时段，避免用打开页面时的空会话启动（F12）
-      const session = activeSession(sessionConfig)
-      sessionRef.current = session
-      noiseService.setSession(
-        session?.name ?? '自由监测',
-        sessionConfig?.alertThresholdDb ?? 55,
-      )
-      setSessionName(session?.name ?? '自由监测')
-      setDisplayDb(0)
-      await noiseService.start()
-      setMonitoring(true)
-      unsubscribeRef.current = noiseService.subscribe((snapshot) => {
-        setStatus(snapshot.status)
-        setDisplayDb((previous) =>
-          previous === 0 ? snapshot.currentDisplayDb : previous * 0.75 + snapshot.currentDisplayDb * 0.25,
-        )
-        setRingBuffer(snapshot.ringBuffer)
-        setScore(snapshot.currentScore)
-        setScoreDetail(snapshot.currentScoreDetail)
-      })
+      await noiseService.startCurrent()
     } catch {
-      setStatus('error')
+      if (noiseService.getStatus() === 'permission-denied') {
+        settings.set('noiseMonitor.micGranted', false)
+        setMicPermissionState('denied')
+      }
+    } finally {
+      const permission = await checkMicPermission()
+      const effective =
+        permission === 'prompt' && noiseService.getStatus() === 'active'
+          ? 'granted'
+          : permission
+      setMicPermissionState(effective)
+      if (effective === 'granted' && noiseService.getStatus() === 'active') {
+        settings.set('noiseMonitor.micGranted', true)
+      } else if (effective === 'denied' || effective === 'unavailable') {
+        settings.set('noiseMonitor.micGranted', false)
+      }
     }
-  }, [sessionConfig])
+  }, [])
+
+  /* 服务层单例订阅：组件卸载不停止监测，路由切换后回来仍是同一会话 */
+  useEffect(() => {
+    return noiseService.subscribe((snapshot) => {
+      setStatus(snapshot.status)
+      setDisplayDb((previous) => {
+        if (snapshot.status !== 'active') return 0
+        return previous === 0
+          ? snapshot.currentDisplayDb
+          : previous * 0.75 + snapshot.currentDisplayDb * 0.25
+      })
+      setRingBuffer(snapshot.ringBuffer)
+      setScore(snapshot.currentScore)
+      setScoreDetail(snapshot.currentScoreDetail)
+    })
+  }, [])
 
   /* 加载晚自习配置（KV） */
   useEffect(() => {
-    if (!noiseEnabled) return
+    if (!noiseEnabled) {
+      noiseService.setSchedule(null)
+      noiseService.stop()
+      setSessionConfig(null)
+      return
+    }
     void (async () => {
       try {
         const entry = await getClient().get<NoiseSessionConfig>('noise-session-config')
         setSessionConfig(entry?.value ?? { sessions: DEFAULT_SESSIONS, alertThresholdDb: 55 })
-      } catch {
-        setSessionConfig({ sessions: DEFAULT_SESSIONS, alertThresholdDb: 55 })
+      } catch (error) {
+        console.warn('[noise] 时段配置读取失败，保留上次配置/暂停自动开始', error)
+        setSessionConfig(null)
       }
     })()
   }, [noiseEnabled])
 
-  /* 麦克风权限探测（自动启动交给下方的时段判断） */
+  /* 麦克风权限探测 */
   useEffect(() => {
     if (!noiseEnabled) return
     let cancelled = false
@@ -216,6 +192,10 @@ export function TimeCard() {
       const state = await checkMicPermission()
       if (cancelled) return
       setMicPermissionState(state)
+      if (state === 'granted') settings.set('noiseMonitor.micGranted', true)
+      if (state === 'denied' || state === 'unavailable') {
+        settings.set('noiseMonitor.micGranted', false)
+      }
       if (state === 'prompt' && !permissionDismissed) {
         setPermissionOpen(true)
       }
@@ -226,45 +206,16 @@ export function TimeCard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [noiseEnabled])
 
-  /* 晚自习时段：进入时段自动开始并接管当前时段，离开时段结束并归档 */
+  /* 把时段、自动开始与权限状态交给服务层，由服务层跨路由维护 */
   useEffect(() => {
     if (!noiseEnabled || !sessionConfig) return
-    const evaluate = () => {
-      const current = activeSession(sessionConfig)
-      sessionRef.current = current
-      if (current) {
-        if (!autoStart || micPermissionState !== 'granted') return
-        if (!monitoring) {
-          void startNoise()
-        } else if (sessionName !== current.name) {
-          // 已在自由监测或上一节时段中：直接切换到当前时段与阈值
-          noiseService.setSession(current.name, sessionConfig.alertThresholdDb ?? 55)
-          setSessionName(current.name)
-        }
-      } else if (monitoring && sessionName !== '自由监测') {
-        stopNoise()
-      }
-    }
-    evaluate()
-    const timer = window.setInterval(evaluate, 30_000)
-    return () => window.clearInterval(timer)
-  }, [
-    noiseEnabled,
-    sessionConfig,
-    monitoring,
-    autoStart,
-    micPermissionState,
-    sessionName,
-    startNoise,
-    stopNoise,
-  ])
-
-  useEffect(() => {
-    return () => {
-      unsubscribeRef.current?.()
-      noiseService.stop()
-    }
-  }, [])
+    noiseService.setSchedule({
+      sessions: sessionConfig.sessions,
+      alertThresholdDb: sessionConfig.alertThresholdDb,
+      autoStart,
+      permission: micPermissionState,
+    })
+  }, [noiseEnabled, sessionConfig, autoStart, micPermissionState])
 
   const dbColor = (() => {
     if (!monitoring || status !== 'active' || typeof displayDb !== 'number') return 'grey'
@@ -541,21 +492,19 @@ function FullscreenClock({ open, onClose }: { open: boolean; onClose: () => void
       const current = Date.now()
       const delta = current - lastTick.current
       lastTick.current = current
-      setRemaining((prev) => {
-        const next = prev - delta
-        if (next <= 0) {
-          setCountdownRunning(false)
-          setCountdownDone(true)
-          beep(3)
-          return 0
-        }
-        return next
-      })
+      setRemaining((prev) => Math.max(0, prev - delta))
     }, 100)
     return () => {
       if (tickRef.current) window.clearInterval(tickRef.current)
     }
   }, [countdownRunning])
+
+  useEffect(() => {
+    if (!countdownRunning || remaining > 0) return
+    setCountdownRunning(false)
+    setCountdownDone(true)
+    beep(3)
+  }, [countdownRunning, remaining])
 
   /* 秒表循环 */
   useEffect(() => {
@@ -771,6 +720,7 @@ function FullscreenClock({ open, onClose }: { open: boolean; onClose: () => void
                     <button
                       type="button"
                       className="btn btn-tonal btn-lg btn-icon"
+                      disabled={remaining <= 0}
                       onClick={() => setCountdownRunning((r) => !r)}
                       aria-label={countdownRunning ? '暂停' : '继续'}
                     >

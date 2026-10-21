@@ -25,8 +25,8 @@ export function validateUafPdf(bytes: Uint8Array): Promise<{
   payload?: UafAssignment[]
 }>
 
-export function extractUafPayload(bytes: Uint8Array): UafAssignment[]
+export function extractUafPayload(bytes: Uint8Array): Promise<UafAssignment[]>
 
-export function extractUafPayloadCsv(bytes: Uint8Array): string
+export function extractUafPayloadCsv(bytes: Uint8Array): Promise<string>
 
 export function createUafPdfFromCsv(csv: string, options: UafPdfOptions): Promise<Uint8Array>

@@ -3,6 +3,7 @@ import { MdiIcon } from '../MdiIcon'
 import { SettingsCard } from './SettingsCard'
 import { SettingItem } from './SettingItem'
 import { getClient } from '../../lib/kv'
+import { noiseService } from '../../lib/noise'
 import { toast } from '../../lib/toast'
 
 interface NoiseSession {
@@ -19,7 +20,7 @@ interface SessionConfig {
 
 const DEFAULT_CONFIG: SessionConfig = {
   sessions: [
-    { name: '第1节晚自习', start: '19:20', duration: 70, enabled: true },
+    { name: '第1节晚自习', start: '19:20', duration: 60, enabled: true },
     { name: '第2节晚自习', start: '20:20', duration: 110, enabled: true },
   ],
   alertThresholdDb: 55,
@@ -39,6 +40,7 @@ export function NoiseSettingsCard() {
   const [saving, setSaving] = useState(false)
   const [sessions, setSessions] = useState<NoiseSession[]>(DEFAULT_CONFIG.sessions)
   const [threshold, setThreshold] = useState(DEFAULT_CONFIG.alertThresholdDb)
+  const [updatedAt, setUpdatedAt] = useState<number | null>(null)
 
   useEffect(() => {
     void (async () => {
@@ -49,6 +51,7 @@ export function NoiseSettingsCard() {
           setSessions(JSON.parse(JSON.stringify(data.sessions)))
           setThreshold(data.alertThresholdDb || 55)
         }
+        setUpdatedAt(entry?.updatedAt ?? null)
       } catch {
         /* 使用默认配置 */
       } finally {
@@ -58,10 +61,28 @@ export function NoiseSettingsCard() {
   }, [])
 
   const save = async () => {
+    const normalized = sessions.map((session) => ({
+      ...session,
+      name: session.name.trim() || '未命名时段',
+      duration: Math.min(300, Math.max(10, Number.isFinite(session.duration) ? session.duration : 10)),
+    }))
+    const alertThresholdDb = Math.min(90, Math.max(30, threshold))
     setSaving(true)
     try {
-      await getClient().set('noise-session-config', { sessions, alertThresholdDb: threshold })
-      toast.success('已保存', '晚自习时段配置已生效')
+      const { entry, queued } = await getClient().set(
+        'noise-session-config',
+        { sessions: normalized, alertThresholdDb },
+        { baseUpdatedAt: updatedAt },
+      )
+      setUpdatedAt(entry.updatedAt)
+      setSessions(normalized)
+      setThreshold(alertThresholdDb)
+      noiseService.updateScheduleConfig({ sessions: normalized, alertThresholdDb })
+      if (queued) {
+        toast.warning('已保存到本地', '联网后会自动同步时段配置')
+      } else {
+        toast.success('已保存', '晚自习时段配置已生效')
+      }
     } catch (error) {
       toast.error('保存失败', error instanceof Error ? error.message : '请稍后重试')
     } finally {
@@ -101,7 +122,7 @@ export function NoiseSettingsCard() {
                 {
                   name: `第${current.length + 1}节晚自习`,
                   start: '19:00',
-                  duration: 70,
+                  duration: 60,
                   enabled: true,
                 },
               ])
@@ -158,15 +179,17 @@ export function NoiseSettingsCard() {
                       min={10}
                       max={300}
                       value={session.duration}
-                      onChange={(event) =>
+                      onChange={(event) => {
+                        const value = Number(event.target.value)
+                        const duration = Number.isFinite(value)
+                          ? Math.min(300, Math.max(10, value))
+                          : 10
                         setSessions((current) =>
                           current.map((item, itemIndex) =>
-                            itemIndex === index
-                              ? { ...item, duration: Number(event.target.value) }
-                              : item,
+                            itemIndex === index ? { ...item, duration } : item,
                           ),
                         )
-                      }
+                      }}
                       style={{ maxWidth: 130 }}
                       aria-label="时长"
                     />
@@ -234,7 +257,10 @@ export function NoiseSettingsCard() {
               min={30}
               max={90}
               value={threshold}
-              onChange={(event) => setThreshold(Number(event.target.value))}
+              onChange={(event) => {
+                const value = Number(event.target.value)
+                setThreshold(Number.isFinite(value) ? Math.min(90, Math.max(30, value)) : 55)
+              }}
               style={{ width: 120 }}
             />
             <span className="text-caption text-medium-emphasis">dB</span>

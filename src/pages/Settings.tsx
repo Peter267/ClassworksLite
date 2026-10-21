@@ -9,6 +9,7 @@ import { Modal } from '../components/ui/Modal'
 import { relativeTime } from '../lib/date'
 import { useAppState, useSettingsVersion } from '../lib/hooks'
 import { cacheClear } from '../lib/cache'
+import { getClient } from '../lib/kv'
 import { SETTING_DEFS, settings } from '../lib/settings'
 import { store } from '../lib/store'
 import { toast } from '../lib/toast'
@@ -50,7 +51,6 @@ const GROUP_SETTINGS: Partial<Record<TabKey, string[]>> = {
     'edit.autoSave',
     'edit.blockNonTodayAutoSave',
     'edit.confirmNonTodaySave',
-    'edit.refreshBeforeEdit',
     'edit.blockPastDataEdit',
     'edit.autoSavePromptText',
     'edit.manualSavePromptText',
@@ -59,11 +59,9 @@ const GROUP_SETTINGS: Partial<Record<TabKey, string[]>> = {
   display: [
     'timeCard.enabled',
     'display.emptySubjectDisplay',
-    'display.dynamicSort',
     'display.showRandomButton',
     'display.showFullscreenButton',
     'display.cardHoverEffect',
-    'display.enhancedTouchMode',
     'display.showQuickTools',
     'display.showPasteButtons',
     'display.showAntiScreenBurnCard',
@@ -92,7 +90,7 @@ const GROUP_CARD: Partial<Record<TabKey, { title: string; icon: string }>> = {
   refresh: { title: '刷新设置', icon: 'refresh-circle' },
   edit: { title: '编辑设置', icon: 'cog' },
   hitokoto: { title: '一言设置', icon: 'comment-quote' },
-  random: { title: '编辑设置', icon: 'cog' },
+  random: { title: '随机点名设置', icon: 'dice-multiple' },
   background: { title: '背景设置', icon: 'image' },
 }
 
@@ -303,8 +301,8 @@ export function SettingsPage({
                     className="v-btn v-btn--size-small v-btn--variant-tonal"
                     data-color="primary"
                     onClick={async () => {
-                      await store.reinitialize()
-                      toast.success('已重新连接', '配置已生效')
+                      const ok = await store.reinitialize()
+                      if (ok) toast.success('已重新连接', '配置已生效')
                     }}
                   >
                     <MdiIcon name="refresh" size={18} />
@@ -495,8 +493,24 @@ export function SettingsPage({
                     className="v-btn v-btn--size-small v-btn--variant-tonal"
                     data-color="error"
                     onClick={async () => {
+                      const local = settings.get<string>('server.provider') === 'local'
+                      let pending = 0
+                      try {
+                        pending = await getClient().pendingCount()
+                      } catch {
+                        /* ignore */
+                      }
+                      const message = local
+                        ? '当前是本地数据库模式，清除后所有本地作业数据都会丢失，确定继续吗？'
+                        : pending > 0
+                          ? `当前有 ${pending} 条尚未同步的离线改动，清除后也会丢失。确定继续吗？`
+                          : '清除本地缓存后需要重新从云端拉取数据，确定继续吗？'
+                      if (!window.confirm(message)) return
                       await cacheClear()
-                      toast.success('已清除本地缓存', '云端数据不受影响，刷新后会重新拉取')
+                      toast.success(
+                        '已清除本地缓存',
+                        local ? '本地数据已清空' : '云端数据不受影响，刷新后会重新拉取',
+                      )
                       window.setTimeout(() => window.location.reload(), 900)
                     }}
                   >
@@ -530,7 +544,7 @@ export function SettingsPage({
                 </p>
                 <div className="grid sm:grid-cols-2" style={{ gap: 8 }}>
                   {[
-                    ['数据存储', provider === 'cloud' ? 'Serverless KV' : 'IndexedDB（本地）'],
+                    ['数据存储', provider === 'cloud' ? 'Serverless KV' : 'localStorage（本地）'],
                     ['离线能力', 'PWA 缓存 + 离线写入队列'],
                     ['多端同步', 'BroadcastChannel + 增量轮询'],
                     ['依赖', '零后端依赖，单函数即可上线'],
@@ -576,7 +590,10 @@ export function SettingsPage({
           </>
         }
       >
-        <p className="text-body-2">所有设置项将回到初始值，作业数据、学生名单与科目不会受影响。</p>
+        <p className="text-body-2">
+          所有设置项将回到初始值（包括服务器地址、站点令牌与编辑令牌），并切回本地数据库模式；
+          作业数据、学生名单与科目本身不会被删除。
+        </p>
       </Modal>
     </>
   )

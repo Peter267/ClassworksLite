@@ -11,8 +11,8 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "deploy:cf": "npm run build && wrangler pages deploy dist",
-    "deploy:worker": "npm run build && wrangler deploy -c wrangler.toml"
+    "deploy:cf": "npm run build && npx wrangler pages deploy dist",
+    "deploy:worker": "npm run build && npx wrangler deploy -c wrangler.toml"
   },
   "dependencies": {
     "react": "^19.2.0",

@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Icon } from '../components/Icon'
-import { Modal } from '../components/ui/Modal'
-import { shortDate, isSameDay, toISODate, today } from '../lib/date'
+import { ConfirmDialog, Modal } from '../components/ui/Modal'
+import { isPastDay, shortDate, toISODate, today } from '../lib/date'
 import { useAppState, useSetting } from '../lib/hooks'
 import { store } from '../lib/store'
 import { toast } from '../lib/toast'
@@ -34,8 +34,11 @@ export function ExamBoard({ onBack }: { onBack: () => void }) {
   const state = useAppState()
   const [blockPast] = useSetting<boolean>('edit.blockPastDataEdit')
   const [editing, setEditing] = useState<ExamConfig | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<ExamConfig | null>(null)
+  const [deleting, setDeleting] = useState(false)
+  const dataReady = state.status === 'ready' && state.loaded
   // 固定/移出看板写的是当前日期的作业板，历史日期同样受「禁止编辑历史」约束（F6）
-  const boardLocked = blockPast && !isSameDay(state.date, today())
+  const boardLocked = (blockPast && isPastDay(state.date)) || !dataReady
 
   const upcoming = useMemo(() => {
     const todayIso = toISODate(today())
@@ -133,11 +136,19 @@ export function ExamBoard({ onBack }: { onBack: () => void }) {
                         className={`btn btn-sm ${added ? 'btn-outline' : 'btn-tonal'}`}
                         onClick={() => {
                           if (boardLocked) {
-                            toast.warning('无法修改', '设置中已禁止编辑历史数据')
+                            toast.warning(
+                              '无法修改',
+                              !dataReady ? '数据尚未加载完成' : '设置中已禁止编辑历史数据',
+                            )
                             return
                           }
-                          const nowAdded = store.addExamCard(exam.id)
-                          toast.success(nowAdded ? '已添加到作业板' : '已从作业板移除', exam.examName)
+                          const result = store.addExamCard(exam.id)
+                          if (result.ok) {
+                            toast.success(
+                              result.added ? '已添加到作业板' : '已从作业板移除',
+                              exam.examName,
+                            )
+                          }
                         }}
                       >
                         <Icon name={added ? 'close' : 'plus'} size={13} />
@@ -155,10 +166,7 @@ export function ExamBoard({ onBack }: { onBack: () => void }) {
                         type="button"
                         className="btn btn-ghost btn-sm"
                         style={{ color: 'var(--error)' }}
-                        onClick={async () => {
-                          await store.deleteExam(exam.id)
-                          if (state.board.homework[`exam-${exam.id}`]) store.addExamCard(exam.id)
-                        }}
+                        onClick={() => setDeleteTarget(exam)}
                       >
                         <Icon name="trash" size={13} />
                         删除
@@ -180,6 +188,32 @@ export function ExamBoard({ onBack }: { onBack: () => void }) {
       </div>
 
       <ExamEditor key={editing?.id ?? 'closed'} exam={editing} onClose={() => setEditing(null)} />
+
+      <ConfirmDialog
+        open={Boolean(deleteTarget)}
+        title="删除考试"
+        text={
+          <>
+            确定删除 <b>{deleteTarget?.examName || '未命名考试'}</b>？所有日期上的考试卡片也会一并移除，
+            此操作不可恢复。
+          </>
+        }
+        confirmText={deleting ? '删除中…' : '删除'}
+        danger
+        onCancel={() => {
+          if (!deleting) setDeleteTarget(null)
+        }}
+        onConfirm={() => {
+          if (!deleteTarget || deleting) return
+          setDeleting(true)
+          void store
+            .deleteExam(deleteTarget.id)
+            .then((ok) => {
+              if (ok) setDeleteTarget(null)
+            })
+            .finally(() => setDeleting(false))
+        }}
+      />
     </div>
   )
 }
@@ -205,6 +239,8 @@ function ExamEditor({ exam, onClose }: { exam: ExamConfig | null; onClose: () =>
       title={exam && exam.examName ? '编辑考试' : '新建考试'}
       width={640}
       fullscreenOnMobile
+      closable={false}
+      maskClosable={false}
       footer={
         <>
           <div className="flex-1" />
@@ -226,8 +262,13 @@ function ExamEditor({ exam, onClose }: { exam: ExamConfig | null; onClose: () =>
                 toast.warning('至少填写一个科目', '')
                 return
               }
-              await store.saveExam({ ...draft, examName: name, subjects, updatedAt: Date.now() })
-              onClose()
+              const saved = await store.saveExam({
+                ...draft,
+                examName: name,
+                subjects,
+                updatedAt: Date.now(),
+              })
+              if (saved) onClose()
             }}
           >
             保存

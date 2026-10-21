@@ -15,6 +15,10 @@ const LIMITS = {
   tagCountMax: 20,
 }
 
+const MAX_UAF_PDF_BYTES = 20 * 1024 * 1024
+const MAX_UAF_ASSIGNMENTS = 2000
+const MAX_UAF_DATES = 366
+
 export class UafExportValidationError extends Error {
   issues: string[]
 
@@ -59,6 +63,8 @@ export interface ImportRow {
 export interface ImportPlan {
   rows: ImportRow[]
   boards: Map<string, BoardData>
+  /** 创建计划时各日期作业板的云端版本，用于执行时的条件写 */
+  versions: Map<string, number | null>
 }
 
 /** 校验真实存在的日历日期，拒绝 2026-02-31 这类会被 Date 自动进位的值（F18） */
@@ -211,6 +217,9 @@ export async function parseUafPdf(file: File): Promise<UafAssignment[]> {
   if (!file || !file.name?.toLowerCase().endsWith('.pdf')) {
     throw new UafExportValidationError(['请选择 UAF PDF 文件'])
   }
+  if (file.size > MAX_UAF_PDF_BYTES) {
+    throw new UafExportValidationError(['UAF PDF 不能超过 20MB'])
+  }
   const bytes = new Uint8Array(await file.arrayBuffer())
   const { validateUafPdf, extractUafPayload } = await loadBrowserUaf()
   const validation = await validateUafPdf(bytes)
@@ -219,19 +228,32 @@ export async function parseUafPdf(file: File): Promise<UafAssignment[]> {
       validation.errors.length ? validation.errors : ['文件不是有效的 UAF PDF'],
     )
   }
-  return validation.payload || (extractUafPayload(bytes) as UafAssignment[])
+  return validation.payload ?? (await extractUafPayload(bytes))
 }
 
 export async function createImportPlan(
   document: UafAssignment[],
   subjects: Subject[],
-  loadBoardData: (date: string) => Promise<BoardData>,
+  loadBoardData: (date: string) => Promise<{ board: BoardData; updatedAt: number | null }>,
 ): Promise<ImportPlan> {
+  if (document.length > MAX_UAF_ASSIGNMENTS) {
+    throw new UafExportValidationError([`单次导入不能超过 ${MAX_UAF_ASSIGNMENTS} 项作业`])
+  }
   const subjectNames = new Set(subjects.map((subject) => subject.name))
   const dates = [...new Set(document.map((assignment) => toClassworksDate(assignment.date)))]
+  if (dates.length > MAX_UAF_DATES) {
+    throw new UafExportValidationError([`单次导入不能超过 ${MAX_UAF_DATES} 个日期`])
+  }
   const boards = new Map<string, BoardData>()
-  for (const date of dates) boards.set(date, await loadBoardData(date))
+  const versions = new Map<string, number | null>()
+  for (const date of dates) {
+    const loaded = await loadBoardData(date)
+    boards.set(date, loaded.board)
+    versions.set(date, loaded.updatedAt)
+  }
 
+  // 新自定义卡片使用计划内稳定的 key，失败重试不会重复创建
+  const planId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
   const rows = document.map((assignment, index) => {
     const date = toClassworksDate(assignment.date)
     const board = boards.get(date)!
@@ -242,9 +264,18 @@ export async function createImportPlan(
         Object.keys(board.homework || {}).find(
           (key) =>
             key.startsWith('custom-') && board.homework[key]?.name === assignment.subject,
-        ) ?? null
+        ) ?? `custom-uaf-${planId}-${index}`
     }
-    const conflict = Boolean(targetKey && board.homework?.[targetKey]?.content?.trim())
+    const conflict = Boolean(
+      isSubject
+        ? board.homework?.[targetKey!]?.content?.trim()
+        : Object.keys(board.homework || {}).some(
+            (key) =>
+              key.startsWith('custom-') &&
+              key === targetKey &&
+              board.homework[key]?.content?.trim(),
+          ),
+    )
     return {
       id: `uaf-import-${index}`,
       index,
@@ -256,12 +287,13 @@ export async function createImportPlan(
       action: conflict ? ('keep' as const) : ('import' as const),
     }
   })
-  return { rows, boards }
+  return { rows, boards, versions }
 }
 
 export function findImportPlanIssues(rows: ImportRow[]): string[] {
   const issues: string[] = []
   const activeTargets = new Map<string, string>()
+  const activeSubjects = new Map<string, string>()
   for (const row of rows) {
     if (row.action === 'keep') continue
     const key = row.targetKey ? `${row.date}:${row.targetKey}` : null
@@ -269,6 +301,12 @@ export function findImportPlanIssues(rows: ImportRow[]): string[] {
       issues.push(`${row.date} 的“${row.assignment.subject}”有多条记录指向同一卡片`)
     }
     if (key) activeTargets.set(key, row.id)
+
+    const subjectKey = `${row.date}:${row.assignment.subject}`
+    if (activeSubjects.has(subjectKey)) {
+      issues.push(`${row.date} 的“${row.assignment.subject}”有多条导入记录`)
+    }
+    activeSubjects.set(subjectKey, row.id)
   }
   return issues
 }
@@ -297,17 +335,10 @@ export async function executeImportPlan(
         content: row.assignment.content,
         tags: row.assignment.tags,
       } as HomeworkItem
-    } else if (row.targetKey) {
-      board.homework[row.targetKey] = {
-        ...board.homework[row.targetKey],
-        name: row.assignment.subject,
-        type: 'custom',
-        content: row.assignment.content,
-        tags: row.assignment.tags,
-      }
     } else {
-      const key = `custom-uaf-${Date.now()}-${row.index}`
+      const key = row.targetKey ?? `custom-uaf-${row.date}-${row.index}`
       board.homework[key] = {
+        ...board.homework[key],
         name: row.assignment.subject,
         type: 'custom',
         content: row.assignment.content,
@@ -337,16 +368,28 @@ async function fetchFont(filename: string) {
   return response.arrayBuffer()
 }
 
+let fontCache: Promise<[ArrayBuffer, ArrayBuffer, ArrayBuffer]> | null = null
+
+function loadUafFonts() {
+  if (!fontCache) {
+    fontCache = Promise.all([
+      fetchFont('HarmonyOS_Sans_SC_Regular.ttf'),
+      fetchFont('HarmonyOS_Sans_SC_Light.ttf'),
+      fetchFont('HarmonyOS_Sans_SC_Bold.ttf'),
+    ]).catch((error) => {
+      fontCache = null
+      throw error
+    })
+  }
+  return fontCache
+}
+
 export async function buildUafPdfBytes(assignments: UafAssignment[]) {
   if (!assignments.length) throw new UafExportValidationError(['请至少选择一项作业'])
   const issues = assignments.flatMap((assignment) => validateUafAssignment(assignment))
   if (issues.length) throw new UafExportValidationError(issues)
   const { createUafPdf } = await loadBrowserUaf()
-  const [fontBytes, fontLightBytes, fontBoldBytes] = await Promise.all([
-    fetchFont('HarmonyOS_Sans_SC_Regular.ttf'),
-    fetchFont('HarmonyOS_Sans_SC_Light.ttf'),
-    fetchFont('HarmonyOS_Sans_SC_Bold.ttf'),
-  ])
+  const [fontBytes, fontLightBytes, fontBoldBytes] = await loadUafFonts()
   const wasmUrl = new URL('uaf/hb-subset.wasm', `${window.location.origin}${import.meta.env.BASE_URL}`)
   return createUafPdf(assignments, {
     fontBytes,

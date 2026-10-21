@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Icon } from './Icon'
 import { Modal } from './ui/Modal'
-import { KEYPAD_ROWS, QUICK_TEXTS } from '../lib/defaults'
+import { DEFAULT_TEMPLATE, KEYPAD_ROWS, QUICK_TEXTS } from '../lib/defaults'
 import { longDate } from '../lib/date'
 import { useSetting } from '../lib/hooks'
 import { KEYS } from '../lib/store'
@@ -17,9 +17,9 @@ interface EditDialogProps {
   isPast: boolean
   /** 自定义卡片：允许改名与删除 */
   custom?: boolean
-  onRename?: (name: string) => void
-  onDelete?: () => void
-  onSave: (content: string) => void
+  onRename?: (name: string) => boolean
+  onDelete?: () => boolean
+  onSave: (content: string) => boolean | Promise<boolean>
   onClose: () => void
 }
 
@@ -69,9 +69,10 @@ export function EditDialog({
     void (async () => {
       try {
         const entry = await getClient().get<HomeworkTemplate>(KEYS.template)
-        setTemplate(entry?.value ?? null)
+        setTemplate(entry?.value ?? DEFAULT_TEMPLATE)
       } catch {
-        setTemplate(null)
+        // 离线读取失败时使用内置动作，避免模板区完全空白
+        setTemplate(DEFAULT_TEMPLATE)
       }
     })()
 
@@ -86,31 +87,46 @@ export function EditDialog({
     el.style.height = `${Math.max(el.scrollHeight, 150)}px`
   }, [content, open])
 
-  /* 输入停顿 2 秒自动保存（F1） */
+  /* 输入停顿 2 秒自动保存（F1）；只有写入被接受后才更新已保存基线 */
   useEffect(() => {
     if (!open || !autoSave) return
+    let cancelled = false
     const timer = setTimeout(() => {
       const next = content.trim()
       // 自定义卡片清空等于删除，等关闭时再处理，避免输入中途卡片突然消失
       if (custom && next === '') return
       if (next === savedContent.current) return
-      savedContent.current = next
-      onSaveRef.current(next)
+      void (async () => {
+        try {
+          const saved = await onSaveRef.current(next)
+          if (saved && !cancelled) savedContent.current = next
+        } catch {
+          /* store 已提示错误，保留未保存状态 */
+        }
+      })()
     }, 2000)
-    return () => clearTimeout(timer)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
   }, [content, open, autoSave, custom])
 
-  const commit = useCallback(() => {
+  const commit = useCallback(async () => {
     const next = content.trim()
     if (custom && next === '' && savedContent.current === '') {
       // 空白自定义卡片：清空即删除（F11）
-      onDelete?.()
-      onClose()
+      const deleted = onDelete ? onDelete() : true
+      if (deleted) onClose()
       return
     }
     if (next !== savedContent.current) {
-      savedContent.current = next
-      onSaveRef.current(next)
+      try {
+        const saved = await onSaveRef.current(next)
+        if (!saved) return
+        savedContent.current = next
+      } catch {
+        return
+      }
     }
     onClose()
   }, [content, custom, onDelete, onClose])
@@ -163,8 +179,11 @@ export function EditDialog({
       const next = content.slice(0, start) + text + content.slice(end)
       setContent(next)
       if (andDone) {
-        onSave(next.trim())
-        onClose()
+        const saved = await onSave(next.trim())
+        if (saved) {
+          savedContent.current = next.trim()
+          onClose()
+        }
       } else {
         requestAnimationFrame(() => {
           el?.focus()
@@ -193,7 +212,7 @@ export function EditDialog({
     <Modal
       open={open}
       onClose={() => {
-        commit()
+        void commit()
       }}
       title={<span className="text-truncate">{title}</span>}
       subtitle={autoSave ? autoSaveText : manualSaveText}
@@ -217,7 +236,10 @@ export function EditDialog({
                 onChange={(event) => setNameDraft(event.target.value)}
                 onBlur={() => {
                   const next = nameDraft.trim()
-                  if (next && next !== title) onRename?.(next)
+                  if (next && next !== title) {
+                    const renamed = onRename ? onRename(next) : true
+                    if (!renamed) setNameDraft(title)
+                  }
                   if (!next) setNameDraft(title)
                 }}
                 onKeyDown={(event) => {
@@ -232,8 +254,8 @@ export function EditDialog({
                 className="v-btn v-btn--variant-text"
                 data-color="error"
                 onClick={() => {
-                  onDelete?.()
-                  onClose()
+                  const deleted = onDelete ? onDelete() : true
+                  if (deleted) onClose()
                 }}
               >
                 <Icon name="trash" size={16} />

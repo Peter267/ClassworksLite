@@ -15,7 +15,8 @@ createRoot(container).render(
 /* PWA：生产环境下注册 Service Worker，提供离线访问 */
 if ('serviceWorker' in navigator && import.meta.env.PROD) {
   window.addEventListener('load', () => {
-    void navigator.serviceWorker.register('/sw.js').catch((error) => {
+    const swUrl = `${import.meta.env.BASE_URL}sw.js`
+    void navigator.serviceWorker.register(swUrl).catch((error) => {
       console.warn('[pwa] Service Worker 注册失败', error)
     })
   })

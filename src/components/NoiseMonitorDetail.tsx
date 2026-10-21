@@ -9,13 +9,12 @@ import {
   noiseService,
   resetNoiseControlSettings,
   saveNoiseControlSettings,
+  type MicPermissionState,
   type NoiseReport,
   type NoiseScoreDetail,
   type NoiseSlice,
   type NoiseStatus,
 } from '../lib/noise'
-
-export type MicPermissionState = 'granted' | 'prompt' | 'denied' | 'unavailable' | ''
 
 interface NoiseMonitorDetailProps {
   open: boolean
@@ -35,6 +34,11 @@ interface NoiseMonitorDetailProps {
 
 function dbToY(db: number, height = 120) {
   return height - (Math.max(0, Math.min(100, db)) / 100) * height
+}
+
+function clampNumber(value: number, min: number, max: number, fallback: number) {
+  if (!Number.isFinite(value)) return fallback
+  return Math.min(max, Math.max(min, value))
 }
 
 function formatTime(ts: number) {
@@ -230,7 +234,14 @@ export function NoiseMonitorDetail({
       setCalibrating(false)
       setCalibrateSuccess(success)
       setCalibrateMessage(message)
-      if (success) setCalibration(getNoiseControlSettings())
+      if (success) {
+        const next = getNoiseControlSettings()
+        setCalibration(next)
+        // 同步编辑字段，避免随后点“保存校准”用旧值覆盖自动校准结果
+        setEditBaselineDb(next.baselineDb)
+        setEditBaselineRms(next.baselineRms != null ? String(next.baselineRms) : '')
+        setEditMaxLevelDb(next.maxLevelDb)
+      }
       window.setTimeout(() => setCalibrateMessage(''), 5000)
     })
   }
@@ -669,8 +680,13 @@ export function NoiseMonitorDetail({
                       <div className="text-caption text-medium-emphasis mt-2">
                         统计范围：{formatFullTime(selectedReport.startTime)} - {formatFullTime(selectedReport.endTime)}；
                         噪音报警阈值: {selectedReport.alertThresholdDb || 55} dB； 覆盖率:{' '}
-                        {selectedReport.duration
-                          ? (((selectedReport.samples.length * 2) / (selectedReport.duration / 1000)) * 100).toFixed(1)
+                        {selectedReport.duration && selectedReport.samples.length > 1
+                          ? (
+                              ((selectedReport.samples[selectedReport.samples.length - 1].t -
+                                selectedReport.samples[0].t) /
+                                selectedReport.duration) *
+                              100
+                            ).toFixed(1)
                           : 0}
                         %
                       </div>
@@ -794,7 +810,11 @@ export function NoiseMonitorDetail({
             min={20}
             max={80}
             value={calibrateTarget}
-            onChange={(event) => setCalibrateTarget(Number(event.target.value))}
+            onChange={(event) =>
+              setCalibrateTarget(
+                clampNumber(Number(event.target.value), 20, 80, calibrateTarget),
+              )
+            }
             style={{ maxWidth: 160 }}
             aria-label="目标分贝"
           />
@@ -830,7 +850,11 @@ export function NoiseMonitorDetail({
             min={20}
             max={80}
             value={editBaselineDb}
-            onChange={(event) => setEditBaselineDb(Number(event.target.value))}
+            onChange={(event) =>
+              setEditBaselineDb(
+                clampNumber(Number(event.target.value), 20, 80, editBaselineDb),
+              )
+            }
             style={{ maxWidth: 160 }}
             aria-label="基准分贝"
           />
@@ -848,7 +872,11 @@ export function NoiseMonitorDetail({
             min={40}
             max={120}
             value={editMaxLevelDb}
-            onChange={(event) => setEditMaxLevelDb(Number(event.target.value))}
+            onChange={(event) =>
+              setEditMaxLevelDb(
+                clampNumber(Number(event.target.value), 40, 120, editMaxLevelDb),
+              )
+            }
             style={{ maxWidth: 180 }}
             aria-label="最大显示分贝"
           />
@@ -875,13 +903,23 @@ export function NoiseMonitorDetail({
             className="v-btn v-btn--variant-flat"
             data-color="primary"
             onClick={() => {
-              const patch: { baselineDb: number; maxLevelDb: number; baselineRms?: number } = {
-                baselineDb: editBaselineDb,
-                maxLevelDb: editMaxLevelDb,
-              }
+              const baselineDb = clampNumber(editBaselineDb, 20, 80, 40)
+              const maxLevelDb = clampNumber(editMaxLevelDb, 40, 120, 100)
               const rms = parseFloat(editBaselineRms)
-              if (!Number.isNaN(rms) && rms > 0) patch.baselineRms = rms
+              if (editBaselineRms.trim() && (!Number.isFinite(rms) || rms <= 0)) {
+                setCalibrateSuccess(false)
+                setCalibrateMessage('基准 RMS 必须是大于 0 的数字')
+                return
+              }
+              const patch: { baselineDb: number; maxLevelDb: number; baselineRms?: number } = {
+                baselineDb,
+                maxLevelDb,
+              }
+              if (Number.isFinite(rms) && rms > 0) patch.baselineRms = rms
               setCalibration(saveNoiseControlSettings(patch))
+              setCalibrateSuccess(true)
+              setCalibrateMessage('校准参数已保存')
+              window.setTimeout(() => setCalibrateMessage(''), 3000)
             }}
           >
             <Icon name="save" size={18} />

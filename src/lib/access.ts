@@ -40,6 +40,8 @@ let status: AccessStatus | null = null
 const listeners = new Set<() => void>()
 let lastEditNotice = 0
 let editTokenTimer: ReturnType<typeof setTimeout> | null = null
+/** 隐私模式下 localStorage 不可用时，令牌只保留在内存中 */
+let memoryToken: { token: string; expiresAt: number } | null = null
 
 function emit() {
   listeners.forEach((fn) => fn())
@@ -68,30 +70,41 @@ function apiBase(): string {
 /* ------------------------------------------------------------------ */
 
 export function getAccessToken(): string | null {
+  const usable = (expiresAt: number) =>
+    Number.isFinite(expiresAt) && expiresAt > Date.now() + 30_000
+
+  if (memoryToken) {
+    if (usable(memoryToken.expiresAt)) return memoryToken.token
+    memoryToken = null
+  }
+
   try {
     const token = localStorage.getItem(TOKEN_KEY)
     if (!token) return null
     const expiresAt = Number(localStorage.getItem(EXPIRES_KEY) ?? 0)
-    if (!Number.isFinite(expiresAt) || expiresAt <= Date.now() + 30_000) {
+    if (!usable(expiresAt)) {
       clearAccessToken()
       return null
     }
+    memoryToken = { token, expiresAt }
     return token
   } catch {
-    return null
+    return memoryToken?.token ?? null
   }
 }
 
 export function setAccessToken(token: string, expiresAt: number) {
+  memoryToken = { token, expiresAt }
   try {
     localStorage.setItem(TOKEN_KEY, token)
     localStorage.setItem(EXPIRES_KEY, String(expiresAt))
   } catch {
-    /* 隐私模式下不可用，本次会话仍会通过内存中的状态继续 */
+    /* 隐私模式下 localStorage 不可用，令牌保存在内存中直到刷新页面 */
   }
 }
 
 export function clearAccessToken() {
+  memoryToken = null
   try {
     localStorage.removeItem(TOKEN_KEY)
     localStorage.removeItem(EXPIRES_KEY)
@@ -150,33 +163,48 @@ async function readError(response: Response): Promise<{ error?: string; message?
   }
 }
 
+/** 状态请求必须同时携带访问令牌和编辑令牌，否则 editAuthenticated 永远为 false */
+function notifyEditAuthorized(next: AccessStatus) {
+  status = next
+  emit()
+  if (
+    typeof window !== 'undefined' &&
+    next.authenticated &&
+    (!next.editRequired || next.editAuthenticated)
+  ) {
+    // kv.ts 监听该事件清除“写入被拒”的粘滞标记
+    window.dispatchEvent(new CustomEvent('classworks-lite:edit-authorized'))
+  }
+}
+
 /** 拉取服务端访问状态；网络失败返回 null 并保留上一次状态 */
 export async function refreshAccessStatus(): Promise<AccessStatus | null> {
   try {
-    const response = await request('/api/auth', { method: 'GET' })
+    const response = await request('/api/auth', {
+      method: 'GET',
+      headers: editTokenHeaders(),
+    })
     if (response.status === 404) {
-      status = {
+      notifyEditAuthorized({
         passwordRequired: false,
         editRequired: false,
         authenticated: true,
         editAuthenticated: true,
         unsupported: true,
         checkedAt: Date.now(),
-      }
-      emit()
+      })
       return status
     }
     if (!response.ok) return null
     const data = (await response.json()) as Partial<AccessStatus>
-    status = {
+    notifyEditAuthorized({
       passwordRequired: Boolean(data.passwordRequired),
       editRequired: Boolean(data.editRequired),
       authenticated: Boolean(data.authenticated),
       editAuthenticated: Boolean(data.editAuthenticated),
       unsupported: false,
       checkedAt: Date.now(),
-    }
-    emit()
+    })
     return status
   } catch {
     return null
@@ -220,8 +248,9 @@ export async function loginWithPassword(password: string): Promise<AccessStatus>
   return fallback
 }
 
-/** 服务端要求编辑令牌但当前令牌未通过校验时为只读模式 */
+/** 服务端要求编辑令牌但当前令牌未通过校验时为只读模式；本地模式不受云端状态影响 */
 export function isEditLocked(): boolean {
+  if (getSetting<string>('server.provider') !== 'cloud') return false
   return Boolean(status?.editRequired && !status.editAuthenticated)
 }
 
@@ -230,15 +259,29 @@ export function isEditLocked(): boolean {
 /* ------------------------------------------------------------------ */
 
 if (typeof window !== 'undefined') {
-  // 编辑令牌变更后重新校验；服务端状态更新事件供 store 恢复自动保存
+  // 编辑令牌 / 服务器地址 / 站点令牌 / 存储模式变更后重新校验；状态更新事件供 store 恢复自动保存
   window.addEventListener('classworks-lite:settings', (event) => {
     const key = (event as CustomEvent<{ key?: string }>).detail?.key
-    if (key !== 'server.editToken') return
-    window.dispatchEvent(new CustomEvent('classworks-lite:edit-token-changed'))
+    if (!key) return
+    if (key === 'server.editToken') {
+      window.dispatchEvent(new CustomEvent('classworks-lite:edit-token-changed'))
+    } else if (
+      key !== 'server.domain' &&
+      key !== 'server.siteKey' &&
+      key !== 'server.provider'
+    ) {
+      return
+    }
     if (editTokenTimer) clearTimeout(editTokenTimer)
     editTokenTimer = setTimeout(() => {
       editTokenTimer = null
-      void refreshAccessStatus()
+      if (getSetting<string>('server.provider') === 'cloud') {
+        void refreshAccessStatus()
+      } else {
+        // 本模式无需联网校验，清掉云端遗留的只读状态
+        status = null
+        emit()
+      }
     }, 600)
   })
 
@@ -252,6 +295,10 @@ if (typeof window !== 'undefined') {
   })
 
   window.addEventListener('storage', (event) => {
-    if (event.key === TOKEN_KEY || event.key === EXPIRES_KEY) emit()
+    if (event.key === TOKEN_KEY || event.key === EXPIRES_KEY) {
+      // 另一个标签页更新/清除了令牌，丢弃本标签页的内存副本后重新读取
+      memoryToken = null
+      emit()
+    }
   })
 }

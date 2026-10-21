@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react'
-import { MdiIcon } from './MdiIcon'
+import { Icon } from './Icon'
 import { loginWithPassword } from '../lib/access'
 
 /** 全屏访问密码门：服务端启用 SITE_PASSWORD 时在加载数据前显示 */
@@ -28,11 +28,12 @@ export function AccessGate({ onUnlocked }: { onUnlocked: () => void }) {
     <div className="access-gate-wrap">
       <form className="access-gate-card" onSubmit={handleSubmit}>
         <span className="access-gate-icon">
-          <MdiIcon name="shield-lock-outline" size={30} />
+          <Icon name="lock" size={30} />
         </span>
         <h1 className="text-h5">需要访问密码</h1>
         <p className="text-body-2 text-medium-emphasis mt-2">
-          输入班级访问密码后查看作业。修改作业还需要在「设置 → 服务器 → 访问权限」中填写编辑令牌。
+          输入班级访问密码后查看作业。若服务端启用了编辑令牌，修改作业还需要在
+          「设置 → 服务器 → 访问权限」中填写同值。
         </p>
 
         <label className="block mt-6">

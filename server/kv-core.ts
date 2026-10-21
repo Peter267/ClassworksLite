@@ -44,6 +44,56 @@ export interface HandlerOptions {
 
 const MAX_KEY_LENGTH = 200
 const MAX_BODY_BYTES = 1_000_000
+const MAX_PREFIX_KEYS = 500
+const EDIT_FAILURE_LIMIT = 5
+const EDIT_FAILURE_LOCK_MS = 10 * 60 * 1000
+const encoder = new TextEncoder()
+
+/** 编辑令牌失败限流：KV 没有原子计数，这里做单实例尽力而为的防线 */
+const editFailures = new Map<string, { n: number; first: number; until: number }>()
+const deniedAuditAt = new Map<string, number>()
+
+function editLockedMinutes(ip: string): number {
+  const entry = editFailures.get(ip)
+  if (!entry || entry.until <= Date.now()) return 0
+  return Math.ceil((entry.until - Date.now()) / 60_000)
+}
+
+function recordEditFailure(ip: string): number {
+  const now = Date.now()
+  const current = editFailures.get(ip)
+  const next =
+    current && now - current.first < EDIT_FAILURE_LOCK_MS
+      ? current
+      : { n: 0, first: now, until: 0 }
+  next.n += 1
+  if (next.n >= EDIT_FAILURE_LIMIT) next.until = now + EDIT_FAILURE_LOCK_MS
+  editFailures.set(ip, next)
+  if (editFailures.size > 500) {
+    for (const [key, value] of editFailures) {
+      if (value.until <= now) editFailures.delete(key)
+    }
+  }
+  return next.until > now ? Math.ceil((next.until - now) / 60_000) : 0
+}
+
+function clearEditFailure(ip: string) {
+  editFailures.delete(ip)
+}
+
+/** 未授权请求不逐条写审计，避免匿名流量耗尽 KV 写额度 */
+function shouldAuditDenied(ip: string): boolean {
+  const now = Date.now()
+  const last = deniedAuditAt.get(ip) ?? 0
+  if (now - last < 60_000) return false
+  deniedAuditAt.set(ip, now)
+  if (deniedAuditAt.size > 2000) {
+    for (const [key, at] of deniedAuditAt) {
+      if (now - at > 60_000) deniedAuditAt.delete(key)
+    }
+  }
+  return true
+}
 
 const CORS_HEADERS = (origin: string): Record<string, string> => ({
   'Access-Control-Allow-Origin': origin,
@@ -74,6 +124,26 @@ function validKey(key: unknown): key is string {
   )
 }
 
+/**
+ * 宽容解析：标准记录是 { v, t }；迁移期可能遇到直接存放 JSON 值或原始字符串的旧键。
+ * 管理后台已经兼容这两种形式，站点读取也应保持一致。
+ */
+function parseStoredRecord(raw: string): StoredRecord {
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    if (parsed && typeof parsed === 'object' && 'v' in parsed) {
+      const record = parsed as Partial<StoredRecord>
+      return {
+        v: record.v,
+        t: typeof record.t === 'number' ? record.t : 0,
+      }
+    }
+    return { v: parsed, t: 0 }
+  } catch {
+    return { v: raw, t: 0 }
+  }
+}
+
 export async function handleKV(
   request: Request,
   backend: Backend,
@@ -92,34 +162,58 @@ export async function handleKV(
     return new Response(null, { status: 204, headers: CORS_HEADERS(origin) })
   }
 
+  const ip = clientIp(request)
+  const ua = clientUserAgent(request)
+
   if (!(await isViewAuthorized(request, access))) {
-    await appendAudit(backend, {
-      actor: 'site',
-      action: 'denied',
-      ip: clientIp(request),
-      ua: clientUserAgent(request),
-      note: options.sitePassword ? '缺少或过期的访问令牌' : '站点令牌无效',
-    })
+    if (shouldAuditDenied(ip)) {
+      await appendAudit(backend, {
+        actor: 'site',
+        action: 'denied',
+        ip,
+        ua,
+        note: options.sitePassword ? '缺少或过期的访问令牌' : '站点令牌无效',
+      })
+    }
     return json({ error: 'unauthorized', message: '需要访问授权' }, 401, origin)
   }
 
-  if (
-    (request.method === 'PUT' || request.method === 'DELETE') &&
-    !(await isEditAuthorized(request, access))
-  ) {
-    await appendAudit(backend, {
-      actor: 'site',
-      action: 'denied',
-      ip: clientIp(request),
-      ua: clientUserAgent(request),
-      note: '编辑令牌无效',
-    })
+  const isWrite = request.method === 'PUT' || request.method === 'DELETE'
+  if (isWrite && options.editToken) {
+    const lockMinutes = editLockedMinutes(ip)
+    if (lockMinutes > 0) {
+      return json(
+        { error: 'too_many_attempts', message: `编辑令牌错误次数过多，请 ${lockMinutes} 分钟后再试` },
+        429,
+        origin,
+      )
+    }
+  }
+
+  if (isWrite && !(await isEditAuthorized(request, access))) {
+    const lockMinutes = options.editToken ? recordEditFailure(ip) : 0
+    if (shouldAuditDenied(ip)) {
+      await appendAudit(backend, {
+        actor: 'site',
+        action: 'denied',
+        ip,
+        ua,
+        note: lockMinutes > 0 ? '编辑令牌连续错误，已临时锁定' : '编辑令牌无效',
+      })
+    }
     return json(
-      { error: 'edit_token_required', message: '需要有效的编辑令牌才能修改作业' },
-      403,
+      {
+        error: 'edit_token_required',
+        message:
+          lockMinutes > 0
+            ? `编辑令牌错误次数过多，请 ${lockMinutes} 分钟后再试`
+            : '需要有效的编辑令牌才能修改作业',
+      },
+      lockMinutes > 0 ? 429 : 403,
       origin,
     )
   }
+  if (isWrite) clearEditFailure(ip)
 
   const url = new URL(request.url)
   const key = url.searchParams.get('key')
@@ -131,19 +225,27 @@ export async function handleKV(
         const keys = (await backend.scan(prefix)).filter(
           (name) => !name.startsWith(RESERVED_PREFIX),
         )
-        const detailed = await Promise.all(
-          keys.slice(0, 500).map(async (name) => {
-            const raw = await backend.read(name)
-            let updatedAt = 0
-            try {
-              updatedAt = raw ? ((JSON.parse(raw) as StoredRecord).t ?? 0) : 0
-            } catch {
-              updatedAt = 0
-            }
-            return { key: name, updatedAt }
-          }),
+        const selected = keys.slice(0, MAX_PREFIX_KEYS)
+        const detailed: { key: string; updatedAt: number }[] = []
+        // 分批读取，避免一次请求同时发起数百个 KV 读
+        for (let index = 0; index < selected.length; index += 25) {
+          const batch = selected.slice(index, index + 25)
+          const items = await Promise.all(
+            batch.map(async (name) => {
+              const raw = await backend.read(name)
+              return {
+                key: name,
+                updatedAt: raw ? parseStoredRecord(raw).t : 0,
+              }
+            }),
+          )
+          detailed.push(...items)
+        }
+        return json(
+          { keys: detailed, truncated: keys.length > MAX_PREFIX_KEYS },
+          200,
+          origin,
         )
-        return json({ keys: detailed }, 200, origin)
       }
 
       if (!validKey(key)) {
@@ -153,25 +255,59 @@ export async function handleKV(
       const raw = await backend.read(key)
       if (raw === null) return json({ error: 'not_found', key }, 404, origin)
 
-      const record = JSON.parse(raw) as StoredRecord
+      const record = parseStoredRecord(raw)
       return json({ key, value: record.v, updatedAt: record.t }, 200, origin)
     }
 
     if (request.method === 'PUT') {
       const text = await request.text()
-      if (text.length > MAX_BODY_BYTES) {
+      if (encoder.encode(text).byteLength > MAX_BODY_BYTES) {
         return json({ error: 'payload_too_large', message: '数据超过 1MB' }, 413, origin)
       }
 
-      let body: { key?: unknown; value?: unknown }
+      let body: {
+        key?: unknown
+        value?: unknown
+        baseUpdatedAt?: unknown
+      }
       try {
-        body = JSON.parse(text) as { key?: unknown; value?: unknown }
+        body = JSON.parse(text) as typeof body
       } catch {
         return json({ error: 'bad_request', message: '请求体不是合法 JSON' }, 400, origin)
       }
 
       if (!validKey(body.key) || !('value' in body)) {
         return json({ error: 'bad_request', message: '缺少 key 或 value' }, 400, origin)
+      }
+
+      if ('baseUpdatedAt' in body) {
+        const base = body.baseUpdatedAt
+        if (base !== null && typeof base !== 'number') {
+          return json({ error: 'bad_request', message: 'baseUpdatedAt 非法' }, 400, origin)
+        }
+        const existing = await backend.read(body.key)
+        if (existing === null) {
+          if (base !== null) {
+            return json(
+              { error: 'conflict', message: '数据已被删除，请刷新后重试' },
+              409,
+              origin,
+            )
+          }
+        } else {
+          const current = parseStoredRecord(existing)
+          if (base === null || base !== current.t) {
+            return json(
+              {
+                error: 'conflict',
+                message: '数据已被其他设备修改，请刷新后重试',
+                updatedAt: current.t,
+              },
+              409,
+              origin,
+            )
+          }
+        }
       }
 
       const record: StoredRecord = { v: body.value, t: Date.now() }
@@ -205,11 +341,7 @@ export async function handleKV(
     return json({ error: 'method_not_allowed' }, 405, origin)
   } catch (err) {
     console.error('[kv] 处理失败', err)
-    return json(
-      { error: 'internal_error', message: err instanceof Error ? err.message : '未知错误' },
-      500,
-      origin,
-    )
+    return json({ error: 'internal_error', message: '服务器处理失败' }, 500, origin)
   }
 }
 

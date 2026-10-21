@@ -30,9 +30,10 @@ export function FloatingToolbar({ onCopied }: { onCopied?: (count: number) => vo
     settings.set('font.size', next)
   }
 
-  const goDate = (date: Date) => {
+  const goDate = async (date: Date) => {
     setPickerOpen(false)
-    void store.goToDate(date)
+    const ok = await store.goToDate(date)
+    if (!ok) return
     const url = new URL(window.location.href)
     url.searchParams.set('date', toISODate(date).replaceAll('-', ''))
     window.history.replaceState({}, '', url)
@@ -45,14 +46,14 @@ export function FloatingToolbar({ onCopied }: { onCopied?: (count: number) => vo
       if (count > 0) {
         toast.success('已复制到今天', `共 ${count} 张作业卡片`)
         onCopied?.(count)
+        const url = new URL(window.location.href)
+        url.searchParams.delete('date')
+        window.history.replaceState({}, '', url)
       } else {
         toast.info('没有可复制的作业', '今天的卡片已存在或当前日期没有内容')
       }
     } finally {
       setCopying(false)
-      const url = new URL(window.location.href)
-      url.searchParams.delete('date')
-      window.history.replaceState({}, '', url)
     }
   }
 

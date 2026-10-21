@@ -93,8 +93,11 @@ export function devKV(env: Record<string, string | undefined> = {}): Plugin {
           if (value === undefined) continue
           headers.set(name, Array.isArray(value) ? value.join(',') : value)
         }
-        if (!headers.has('x-forwarded-for') && req.socket.remoteAddress) {
+        // 本地开发也必须覆盖客户端可伪造的 X-Forwarded-For，否则限流可被绕过
+        if (req.socket.remoteAddress) {
           headers.set('x-forwarded-for', req.socket.remoteAddress.replace(/^::ffff:/, ''))
+          headers.delete('cf-connecting-ip')
+          headers.delete('x-real-ip')
         }
 
         const method = (req.method ?? 'GET').toUpperCase()

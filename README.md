@@ -106,12 +106,12 @@ HarmonyOS Sans SC 字体，导出结果与上游一致。
 
 - 访问令牌保存在浏览器 localStorage，过期后自动回到访问门；「访问权限」卡片可手动
   退出访问、重新校验。
-- 编辑令牌只保存在本地设置（localStorage），仅在 PUT / DELETE 请求时作为
-  `X-Edit-Token` 发送，不会随 GET 请求暴露。
+- 编辑令牌只保存在本地设置（localStorage），作为 `X-Edit-Token` 请求头发送；
+  `GET /api/auth` 状态校验也会携带该头（不会进入 URL），因此正确填写后会立即解锁编辑。
 - 只配置 `SITE_PASSWORD` 时，任何访客都能查看并编辑；只配置 `EDIT_TOKEN` 时不设
   查看密码，但修改仍需令牌。
-- 未配置编辑令牌或令牌无效时，前端进入只读模式：编辑操作被拦截并提示，不会产生
-  失败的写入请求或离线队列。
+- 服务端配置了编辑令牌但前端未填写或填写错误时，前端进入只读模式：编辑操作被拦截并提示，
+  不会产生失败的写入请求或离线队列。
 - 同一 IP 连续 5 次访问密码错误锁定 10 分钟，限流状态保存在保留键 `__access-guard`；
   登录、失败与越权请求都会写入审计日志。
 - 旧部署没有 `/api/auth` 时，前端自动视为「未启用访问控制」，保持原有行为。
@@ -287,7 +287,8 @@ npx wrangler secret put ADMIN_PASSWORD   # 管理后台必需
 npx wrangler secret put ADMIN_SECRET     # 可选
 ```
 
-本地 `wrangler dev` 时把同样的值写进 `.dev.vars`（格式 `KEY=value`）。
+本地 `wrangler dev` 时把同样的值写进 `.dev.vars`（格式 `KEY=value`）；该文件已被
+`.gitignore` 忽略，仍请避免把它分享出去。
 
 ### 方案三：Vercel（Upstash Redis）
 
@@ -342,7 +343,8 @@ noise-session-config          → { sessions: [{ name, start, duration, enabled 
 内部保留键（`__` 前缀，公开 `/api/kv` 不可访问）：
 
 ```
-__admin-logs                  → 最近 500 条审计日志（新→旧）
+__audit:<timestamp>-<id>      → 追加式审计日志（最多保留最近 500 条）
+__admin-logs                  → 旧版审计日志数组（仅兼容读取）
 __admin-guard                 → 管理登录失败限流状态（按 IP 哈希）
 __access-guard                → 访问密码失败限流状态（按 IP 哈希）
 ```
@@ -353,8 +355,8 @@ __access-guard                → 访问密码失败限流状态（按 IP 哈希
 GET    /api/auth           → 200 { passwordRequired, editRequired, authenticated, editAuthenticated }
 POST   /api/auth           → body { action: "login", password } → 200 { token, expiresAt, ... } | 401 / 429
 GET    /api/kv?key=K       → 200 { key, value, updatedAt } | 404 { error: "not_found" }
-GET    /api/kv?prefix=P    → 200 { keys: [{ key, updatedAt }] }
-PUT    /api/kv             → body { key, value } → 200 { key, updatedAt }
+GET    /api/kv?prefix=P    → 200 { keys: [{ key, updatedAt }], truncated }
+PUT    /api/kv             → body { key, value, baseUpdatedAt? } → 200 { key, updatedAt } | 409 { error: "conflict", updatedAt }
 DELETE /api/kv?key=K       → 200 { ok: true }
 GET    /api/health         → 200 { ok: true, service: "classworks-lite-kv", ts }
 POST   /api/admin          → body { action, ... } → 200 { ... } | 400 / 401 / 409 / 413 / 429 / 503
@@ -369,8 +371,10 @@ POST   /api/admin          → body { action, ... } → 200 { ... } | 400 / 401 
   同一 IP 连续 5 次密码错误返回 429，锁定 10 分钟
 - 管理接口：除 `login` 外的动作都需要 `Authorization: Bearer <adminToken>`
   （或 `X-Admin-Token`），令牌由 `login` 返回
-- 单条上限 1 MB，键长上限 200 字符
-- `__` 前缀为内部保留键（`__admin-logs`、`__admin-guard`），公开接口不可读写，
+- 单条上限 1 MB，键长上限 200 字符；`prefix` 最多返回 500 个键并用 `truncated` 标记
+- `PUT` 可带 `baseUpdatedAt` 做条件写：数字表示期望的当前版本，`null` 表示期望键不存在；
+  版本不匹配返回 409 和当前 `updatedAt`
+- `__` 前缀为内部保留键（`__audit:*`、`__admin-logs`、`__admin-guard`），公开接口不可读写，
   也不会出现在 `prefix` 查询与管理后台的数据列表中
 - 所有响应 `Cache-Control: no-store`
 
@@ -380,6 +384,7 @@ POST   /api/admin          → body { action, ... } → 200 { ... } | 400 / 401 
 | --- | --- | --- |
 | `login` | `password` | 校验密码，返回 `{ token, expiresAt }`（12 小时） |
 | `session` | — | 校验令牌，返回 `{ authenticated, expiresAt, logLimit }` |
+| `overview` | — | 一次扫描返回 `{ stats, keys, truncated }`，供管理后台概览使用 |
 | `stats` | — | 数据键总数、总大小、近 24 小时更新数与分组统计 |
 | `keys` | — | 全部数据键的 `{ key, updatedAt, size, group }`（最多 1000 条） |
 | `get` | `key` | 读取单条数据，返回 `{ key, value, updatedAt, size, legacy, group }` |

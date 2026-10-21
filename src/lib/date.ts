@@ -39,6 +39,11 @@ export function isSameDay(a: Date, b: Date): boolean {
   )
 }
 
+/** 严格早于今天（未来日期不算历史） */
+export function isPastDay(d: Date): boolean {
+  return d.getTime() < today().getTime()
+}
+
 const WEEKDAYS = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六']
 
 export function weekdayLabel(d: Date): string {

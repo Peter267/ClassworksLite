@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { HITOKOTO_FALLBACK } from '../lib/defaults'
+import { HITOKOTO_ENDPOINT, HITOKOTO_FALLBACK } from '../lib/defaults'
 import { useSetting } from '../lib/hooks'
 
 interface Quote {
@@ -75,7 +75,7 @@ export function HitokotoCard() {
       }
 
       if (!next) {
-        const response = await fetch('https://v1.hitokoto.cn/', {
+        const response = await fetch(HITOKOTO_ENDPOINT, {
           signal: controller.signal,
           headers: { Accept: 'application/json' },
         })

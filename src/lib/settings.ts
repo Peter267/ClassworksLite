@@ -91,16 +91,11 @@ export const SETTING_DEFS: Record<string, SettingDef> = {
       { value: 'button', label: '按钮' },
     ],
   },
-  'display.dynamicSort': {
-    type: 'boolean',
-    default: true,
-    label: '是否启用动态排序',
-    group: 'display',
-  },
   'display.showRandomButton': {
     type: 'boolean',
-    default: false,
+    default: true,
     label: '是否显示随机点人按钮',
+    hint: '还需同时启用「随机点名」功能。',
     group: 'display',
   },
   'display.showFullscreenButton': {
@@ -113,12 +108,6 @@ export const SETTING_DEFS: Record<string, SettingDef> = {
     type: 'boolean',
     default: true,
     label: '是否启用卡片悬浮效果',
-    group: 'display',
-  },
-  'display.enhancedTouchMode': {
-    type: 'boolean',
-    default: true,
-    label: '是否启用增强触摸模式',
     group: 'display',
   },
   'display.showAntiScreenBurnCard': {
@@ -225,6 +214,13 @@ export const SETTING_DEFS: Record<string, SettingDef> = {
     label: '已跳过麦克风权限引导（不再弹出介绍弹框）',
     group: 'noise',
   },
+  'noiseMonitor.micGranted': {
+    type: 'boolean',
+    default: false,
+    label: '已获得麦克风权限（内部状态）',
+    group: 'noise',
+    developer: true,
+  },
 
   /* ---------------- 编辑 ---------------- */
   'edit.autoSave': {
@@ -237,12 +233,6 @@ export const SETTING_DEFS: Record<string, SettingDef> = {
     type: 'boolean',
     default: true,
     label: '禁止自动保存非当天数据',
-    group: 'edit',
-  },
-  'edit.refreshBeforeEdit': {
-    type: 'boolean',
-    default: true,
-    label: '编辑前是否自动刷新',
     group: 'edit',
   },
   'edit.confirmNonTodaySave': {
@@ -280,7 +270,8 @@ export const SETTING_DEFS: Record<string, SettingDef> = {
   'refresh.auto': {
     type: 'boolean',
     default: false,
-    label: '是否启用自动刷新',
+    label: '使用自定义刷新间隔',
+    hint: '关闭时按 15 秒轻量检查更新；开启后使用下方间隔。完全关闭自动拉取请关闭「自动拉取更新」。',
     group: 'refresh',
   },
   'refresh.interval': {
@@ -297,6 +288,7 @@ export const SETTING_DEFS: Record<string, SettingDef> = {
     type: 'boolean',
     default: true,
     label: '自动拉取更新',
+    hint: '关闭后仅手动刷新；开启时会同时同步作业板、花名册、科目与考试配置。',
     group: 'refresh',
   },
 
@@ -395,7 +387,7 @@ export const SETTING_DEFS: Record<string, SettingDef> = {
     type: 'string',
     default: '',
     label: '编辑令牌',
-    hint: '填写服务端配置的 EDIT_TOKEN 后才可以修改作业；留空时只读。',
+    hint: '服务端配置了 EDIT_TOKEN 时必须填写同值才能修改作业；服务端未配置时写操作默认开放。',
     group: 'server',
     secret: true,
   },

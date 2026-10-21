@@ -159,6 +159,11 @@ export const adminApi = {
   stats: (token: string) => call<AdminStats>({ action: 'stats' }, token),
   keys: (token: string) =>
     call<{ keys: AdminKeyInfo[]; truncated: boolean }>({ action: 'keys' }, token),
+  overview: (token: string) =>
+    call<{ stats: AdminStats; keys: AdminKeyInfo[]; truncated: boolean }>(
+      { action: 'overview' },
+      token,
+    ),
   get: (token: string, key: string) => call<AdminRecord>({ action: 'get', key }, token),
   save: (token: string, key: string, value: unknown, baseUpdatedAt?: number) =>
     call<{ key: string; updatedAt: number; size: number }>(

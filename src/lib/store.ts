@@ -8,10 +8,17 @@
 import { ACCESS_STATUS_EVENT, isEditLocked } from './access'
 import { DEFAULT_STUDENTS, DEFAULT_SUBJECTS } from './defaults'
 import { isSameDay, toDateKey, today } from './date'
-import { broadcastChange, getClient, refreshClient, syncChannel } from './kv'
+import {
+  broadcastChange,
+  ConflictError,
+  getClient,
+  refreshClient,
+  SaveError,
+  syncChannel,
+} from './kv'
 import { getSetting } from './settings'
 import { toast } from './toast'
-import type { Attendance, BoardData, ExamConfig, HomeworkItem, Subject } from './types'
+import type { Attendance, BoardData, ExamConfig, HomeworkItem, KVEntry, Subject } from './types'
 
 export const KEYS = {
   board: (dateKey: string) => `classworks-data-${dateKey}`,
@@ -22,6 +29,12 @@ export const KEYS = {
 }
 
 export type AttendanceKind = keyof Attendance
+
+type KeyList = {
+  keys: { key: string; updatedAt: number }[]
+  truncated: boolean
+  stale?: boolean
+}
 
 export interface AppState {
   status: 'loading' | 'ready' | 'error'
@@ -39,6 +52,10 @@ export interface AppState {
   pendingSync: number
   offline: boolean
   source: 'local' | 'cloud'
+  /** 当前作业板是否成功从数据源读取；读取失败时禁止覆盖写入 */
+  loaded: boolean
+  /** 花名册/科目/考试是否成功读取；未成功时禁止用默认值覆盖云端 */
+  catalogLoaded: boolean
   /** 最近一次远程刷新时间，用于顶部状态提示 */
   lastRefresh: number | null
 }
@@ -84,6 +101,11 @@ class BoardStore {
   private accessBound = false
   private settingsTimer: ReturnType<typeof setTimeout> | null = null
   private readOnlyNoticeAt = 0
+  private lastCatalogPoll = 0
+  /** 最近一次成功读取/写入各目录键的版本，用于条件写而不是临时 GET */
+  private catalogUpdatedAt: Record<string, number | null> = {}
+  /** 目录写串行化：同一键的快速连续增删不能拿同一个旧版本并发提交 */
+  private catalogWriteChain: Promise<unknown> = Promise.resolve()
 
   state: AppState = {
     status: 'loading',
@@ -101,6 +123,8 @@ class BoardStore {
     pendingSync: 0,
     offline: false,
     source: 'local',
+    loaded: false,
+    catalogLoaded: false,
     lastRefresh: null,
   }
 
@@ -135,6 +159,26 @@ class BoardStore {
 
     await Promise.all([this.loadCatalog(), this.loadBoard()])
 
+    // 上次离线留下的待同步队列必须在启动时补传，不能只依赖 online 事件
+    if (getSetting<string>('server.provider') === 'cloud') {
+      try {
+        const pending = await getClient().pendingCount()
+        if (pending > 0) {
+          const flushed = await getClient().flush()
+          this.patch({ pendingSync: await getClient().pendingCount() })
+          if (flushed > 0) {
+            toast.success('已补传离线改动', `${flushed} 条数据已同步`)
+            if (!this.state.dirty) {
+              await this.loadBoard(true)
+              await this.loadCatalog()
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('[store] 启动补传失败', err)
+      }
+    }
+
     if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('demo')) {
       // 演示数据必须在对外宣布 ready 之前写完，否则 ?edit= 深链会读到空数据
       this.patch({ status: 'loading' })
@@ -150,6 +194,7 @@ class BoardStore {
     if (typeof window !== 'undefined') {
       window.addEventListener('online', this.handleOnline)
       window.addEventListener('offline', this.handleOffline)
+      window.addEventListener('classworks-lite:sync-error', this.handleSyncError)
       document.addEventListener('visibilitychange', this.handleVisibility)
     }
   }
@@ -172,21 +217,35 @@ class BoardStore {
   /* 读取                                                              */
   /* ---------------------------------------------------------------- */
 
-  private async loadCatalog() {
+  private async loadCatalog(): Promise<boolean> {
     const client = getClient()
-    try {
-      const [studentEntry, subjectEntry, examEntry] = await Promise.all([
-        client.get<{ name: string }[] | string[]>(KEYS.students),
-        client.get<Subject[]>(KEYS.subjects),
-        client.get<ExamConfig[]>(KEYS.exams),
-      ])
+    const [studentResult, subjectResult, examResult] = await Promise.allSettled([
+      client.get<{ name: string }[] | string[]>(KEYS.students),
+      client.get<Subject[]>(KEYS.subjects),
+      client.get<ExamConfig[]>(KEYS.exams),
+    ])
 
+    const patch: Partial<AppState> = {}
+    const versions: Record<string, number | null> = {}
+    let complete = true
+
+    if (studentResult.status === 'fulfilled') {
+      const studentEntry = studentResult.value
+      versions[KEYS.students] = studentEntry?.updatedAt ?? null
       const students = Array.isArray(studentEntry?.value)
         ? studentEntry.value
             .map((item) => (typeof item === 'string' ? item : item?.name))
             .filter((name): name is string => typeof name === 'string' && name.length > 0)
         : null
+      patch.students = students && students.length > 0 ? students : DEFAULT_STUDENTS
+    } else {
+      complete = false
+      console.warn('[store] 学生名单加载失败', studentResult.reason)
+    }
 
+    if (subjectResult.status === 'fulfilled') {
+      const subjectEntry = subjectResult.value
+      versions[KEYS.subjects] = subjectEntry?.updatedAt ?? null
       const subjects =
         Array.isArray(subjectEntry?.value) && subjectEntry.value.length > 0
           ? subjectEntry.value
@@ -194,19 +253,32 @@ class BoardStore {
               .map((item, index) => ({ name: item.name, order: item.order ?? index }))
               .sort((a, b) => a.order - b.order)
           : null
-
-      this.patch({
-        students: students && students.length > 0 ? students : DEFAULT_STUDENTS,
-        subjects: subjects ?? DEFAULT_SUBJECTS,
-        exams: Array.isArray(examEntry?.value) ? examEntry.value : [],
-        pendingSync: await client.pendingCount(),
-      })
-    } catch (err) {
-      console.warn('[store] 配置加载失败', err)
+      patch.subjects = subjects ?? DEFAULT_SUBJECTS
+    } else {
+      complete = false
+      console.warn('[store] 科目加载失败', subjectResult.reason)
     }
+
+    if (examResult.status === 'fulfilled') {
+      versions[KEYS.exams] = examResult.value?.updatedAt ?? null
+      patch.exams = Array.isArray(examResult.value?.value) ? examResult.value.value : []
+    } else {
+      complete = false
+      console.warn('[store] 考试配置加载失败', examResult.reason)
+    }
+
+    try {
+      patch.pendingSync = await client.pendingCount()
+    } catch {
+      /* 统计失败不影响配置读取 */
+    }
+    patch.catalogLoaded = complete || this.state.catalogLoaded
+    this.catalogUpdatedAt = { ...this.catalogUpdatedAt, ...versions }
+    this.patch(patch)
+    return complete
   }
 
-  async loadBoard(force = false) {
+  async loadBoard(force = false): Promise<boolean> {
     const client = getClient()
     const key = KEYS.board(this.state.dateKey)
     const dateKey = this.state.dateKey
@@ -216,21 +288,29 @@ class BoardStore {
     try {
       const entry = await client.get<BoardData>(key)
       // 期间又切换了日期 / 发起了更新的读取：丢弃本次结果
-      if (seq !== this.loadSeq || dateKey !== this.state.dateKey) return
+      if (seq !== this.loadSeq || dateKey !== this.state.dateKey) return false
+      // 读取期间用户开始编辑：保留本地改动，不能用远程快照覆盖
+      if (this.state.dirty || this.state.saving) {
+        this.patch({ status: 'ready' })
+        return false
+      }
       this.patch({
         board: entry ? normalizeBoard(entry.value) : emptyBoard(),
         updatedAt: entry?.updatedAt ?? null,
         status: 'ready',
         error: null,
         dirty: false,
+        loaded: true,
         queued: Boolean(entry?.pending),
         offline: Boolean(entry?.stale),
         lastRefresh: Date.now(),
       })
+      return true
     } catch (err) {
-      if (seq !== this.loadSeq || dateKey !== this.state.dateKey) return
+      if (seq !== this.loadSeq || dateKey !== this.state.dateKey) return false
       const message = err instanceof Error ? err.message : '数据加载失败'
-      this.patch({ status: 'error', error: message })
+      this.patch({ status: 'error', error: message, loaded: false })
+      return false
     }
   }
 
@@ -240,7 +320,18 @@ class BoardStore {
       return
     }
     const before = this.state.updatedAt
-    await this.loadBoard(true)
+    const [boardOk, catalogOk] = await Promise.all([this.loadBoard(true), this.loadCatalog()])
+    if (!boardOk) {
+      if (this.state.dirty) {
+        toast.warning('已保留当前编辑', '刷新期间产生了新的改动，未应用远程数据')
+      } else {
+        toast.error('刷新失败', this.state.error ?? '无法读取当前作业板')
+      }
+      return
+    }
+    if (!catalogOk) {
+      toast.warning('部分配置未刷新', '学生名单/科目/考试配置读取失败，可稍后重试')
+    }
     if (this.state.updatedAt !== before) {
       toast.info('已刷新', '数据已更新到最新')
     } else {
@@ -252,14 +343,14 @@ class BoardStore {
   /* 日期                                                              */
   /* ---------------------------------------------------------------- */
 
-  async goToDate(date: Date) {
-    if (isSameDay(date, this.state.date)) return
+  async goToDate(date: Date): Promise<boolean> {
+    if (isSameDay(date, this.state.date)) return true
     // 切换日期前先落盘；落盘失败或用户取消时不得继续，否则改动会被空板覆盖（D4）
     if (this.state.dirty) {
       const ok = await this.save({ silent: true, auto: this.canAutoSave() })
       if (!ok) {
         if (this.state.dirty) toast.warning('未切换日期', '当前改动尚未保存，请先上传或撤销')
-        return
+        return false
       }
     }
     this.patch({
@@ -267,10 +358,13 @@ class BoardStore {
       dateKey: toDateKey(date),
       board: emptyBoard(),
       dirty: false,
+      loaded: false,
       updatedAt: null,
       status: 'loading',
     })
+    // 日期已经切换；即使读取失败也返回 true，让调用方同步 URL，页面会自行展示错误状态
     await this.loadBoard(true)
+    return true
   }
 
   /* ---------------------------------------------------------------- */
@@ -287,58 +381,63 @@ class BoardStore {
     return false
   }
 
-  private commitBoard(next: BoardData) {
-    if (!this.ensureEditable()) return
+  private commitBoard(next: BoardData): boolean {
+    if (!this.state.loaded) {
+      toast.error('数据尚未加载完成', '请刷新并成功加载后再编辑')
+      return false
+    }
+    if (!this.ensureEditable()) return false
     this.patch({ board: next, dirty: true })
     this.scheduleSave()
+    return true
   }
 
-  setHomework(subject: string, content: string) {
+  setHomework(subject: string, content: string): boolean {
     const homework = { ...this.state.board.homework }
     const existing = homework[subject]
     const trimmed = content.trim()
     if (!trimmed) {
       // 清空即删除；考试卡片保留（由考试看板管理）
-      if (existing?.type === 'exam') return
+      if (existing?.type === 'exam') return false
       delete homework[subject]
     } else {
       homework[subject] = { ...(existing ?? {}), content: trimmed }
     }
-    this.commitBoard({ ...this.state.board, homework })
+    return this.commitBoard({ ...this.state.board, homework })
   }
 
-  removeHomework(subject: string) {
+  removeHomework(subject: string): boolean {
     const homework = { ...this.state.board.homework }
     delete homework[subject]
-    this.commitBoard({ ...this.state.board, homework })
+    return this.commitBoard({ ...this.state.board, homework })
   }
 
-  addCustomCard(name = '自定义卡片', content = '') {
+  addCustomCard(name = '自定义卡片', content = ''): string | null {
     const key = `custom-${Date.now()}`
     const homework = {
       ...this.state.board.homework,
       [key]: { name, content, type: 'custom' as const },
     }
-    this.commitBoard({ ...this.state.board, homework })
-    return key
+    return this.commitBoard({ ...this.state.board, homework }) ? key : null
   }
 
-  renameCustomCard(key: string, name: string) {
+  renameCustomCard(key: string, name: string): boolean {
     const item = this.state.board.homework[key]
-    if (!item) return
-    this.commitBoard({
+    if (!item) return false
+    return this.commitBoard({
       ...this.state.board,
       homework: { ...this.state.board.homework, [key]: { ...item, name } },
     })
   }
 
-  addExamCard(examId: string) {
+  addExamCard(examId: string): { ok: boolean; added: boolean } {
     const key = `exam-${examId}`
     const homework = { ...this.state.board.homework }
-    if (homework[key]) delete homework[key]
-    else homework[key] = { type: 'exam', examId, name: '考试安排', content: '' }
-    this.commitBoard({ ...this.state.board, homework })
-    return Boolean(homework[key])
+    const adding = !homework[key]
+    if (adding) homework[key] = { type: 'exam', examId, name: '考试安排', content: '' }
+    else delete homework[key]
+    const ok = this.commitBoard({ ...this.state.board, homework })
+    return { ok, added: ok && adding }
   }
 
   /* ---------------------------------------------------------------- */
@@ -348,12 +447,26 @@ class BoardStore {
   /** 把当前日期的作业复制到今天（只补空缺，不覆盖已有内容） */
   async copyToToday(): Promise<number> {
     if (!this.ensureEditable()) return 0
+    // 与 goToDate 一致：先保存当前日期的未保存改动，失败则不得切换
+    if (this.state.dirty) {
+      const ok = await this.save({ silent: true, auto: this.canAutoSave() })
+      if (!ok && this.state.dirty) {
+        toast.warning('未复制', '当前改动尚未保存，请先上传或撤销')
+        return 0
+      }
+    }
     const targetDate = today()
     const targetKey = toDateKey(targetDate)
     if (targetKey === this.state.dateKey) return 0
 
     const client = getClient()
-    const entry = await client.get<BoardData>(KEYS.board(targetKey))
+    let entry: KVEntry<BoardData> | null = null
+    try {
+      entry = await client.get<BoardData>(KEYS.board(targetKey))
+    } catch (err) {
+      toast.error('无法读取今天的作业板', err instanceof Error ? err.message : '请检查网络')
+      return 0
+    }
     const target = entry ? normalizeBoard(entry.value) : emptyBoard()
 
     let count = 0
@@ -365,25 +478,38 @@ class BoardStore {
     }
     if (count === 0) return 0
 
-    await client.set(KEYS.board(targetKey), target)
-    broadcastChange(KEYS.board(targetKey))
-    if (this.state.dirty) this.flushPendingSave()
-    this.patch({
-      date: targetDate,
-      dateKey: targetKey,
-      board: target,
-      dirty: false,
-      updatedAt: Date.now(),
-      status: 'ready',
-    })
-    return count
+    try {
+      const { entry: saved, queued } = await client.set(KEYS.board(targetKey), target, {
+        baseUpdatedAt: entry?.updatedAt ?? null,
+      })
+      broadcastChange(KEYS.board(targetKey))
+      this.patch({
+        date: targetDate,
+        dateKey: targetKey,
+        board: target,
+        dirty: false,
+        loaded: true,
+        queued,
+        offline: queued,
+        updatedAt: queued ? entry?.updatedAt ?? null : saved.updatedAt,
+        status: 'ready',
+      })
+      return count
+    } catch (err) {
+      if (err instanceof ConflictError) {
+        toast.warning('今天的作业板已被其他设备修改', '请先刷新今天的作业板再重试')
+      } else {
+        toast.error('复制失败', err instanceof Error ? err.message : '请检查网络')
+      }
+      return 0
+    }
   }
 
   /* ---------------------------------------------------------------- */
   /* 出勤                                                              */
   /* ---------------------------------------------------------------- */
 
-  setAttendance(kind: AttendanceKind, names: string[]) {
+  setAttendance(kind: AttendanceKind, names: string[]): boolean {
     // 批量登记同样要保证「一人一种状态」，否则统计会重复扣减（F2）
     const unique = Array.from(new Set(names))
     const next: Attendance = { ...this.state.board.attendance, [kind]: unique }
@@ -391,10 +517,10 @@ class BoardStore {
       if (other === kind) continue
       next[other] = next[other].filter((name) => !unique.includes(name))
     }
-    this.commitBoard({ ...this.state.board, attendance: next })
+    return this.commitBoard({ ...this.state.board, attendance: next })
   }
 
-  toggleAttendance(name: string, kind: AttendanceKind) {
+  toggleAttendance(name: string, kind: AttendanceKind): boolean {
     const current = this.state.board.attendance
     const others: AttendanceKind[] = ['absent', 'late', 'exclude']
     const next: Attendance = { ...current }
@@ -406,11 +532,14 @@ class BoardStore {
         if (other !== kind) next[other] = next[other].filter((n) => n !== name)
       }
     }
-    this.commitBoard({ ...this.state.board, attendance: next })
+    return this.commitBoard({ ...this.state.board, attendance: next })
   }
 
-  clearAttendance() {
-    this.commitBoard({ ...this.state.board, attendance: { absent: [], late: [], exclude: [] } })
+  clearAttendance(): boolean {
+    return this.commitBoard({
+      ...this.state.board,
+      attendance: { absent: [], late: [], exclude: [] },
+    })
   }
 
   /* ---------------------------------------------------------------- */
@@ -448,6 +577,10 @@ class BoardStore {
       if (!opts.silent) toast.info('无需保存', '当前没有改动')
       return true
     }
+    if (!this.state.loaded) {
+      toast.error('数据尚未加载完成', '为避免覆盖云端数据，请刷新并成功加载后再保存')
+      return false
+    }
     if (!this.ensureEditable()) return false
 
     // 历史数据保存确认统一在这里做，所有入口（首页上传/出勤完成/列表保存/设置立即上传）都不会绕过（F5）
@@ -466,14 +599,42 @@ class BoardStore {
     const snapshot = this.state.board
     this.patch({ saving: true })
     try {
-      const { entry, queued } = await getClient().set(key, snapshot)
+      // 冲突时用服务端返回的最新版本作为新基线重试一次（本地优先，避免永久 409 死锁）
+      const stored = await (async () => {
+        let base = this.state.updatedAt
+        for (let attempt = 0; ; attempt += 1) {
+          try {
+            const result = await getClient().set(key, snapshot, { baseUpdatedAt: base })
+            return { ...result, base }
+          } catch (err) {
+            if (err instanceof ConflictError && attempt === 0) {
+              if (typeof err.updatedAt === 'number') {
+                base = err.updatedAt
+                this.patch({ updatedAt: base })
+                toast.warning('检测到其他设备修改', '正在用当前本地内容覆盖云端版本')
+                continue
+              }
+              if (base !== null) {
+                // 期望存在但服务端已删除：按新建重试
+                base = null
+                this.patch({ updatedAt: null })
+                toast.warning('云端记录已删除', '正在用当前本地内容重新创建')
+                continue
+              }
+            }
+            throw err
+          }
+        }
+      })()
+      const { entry, queued, base: writtenBase } = stored
       // 保存期间又有新的编辑：保持 dirty，稍后继续保存（D3）
       const changedWhileSaving = this.state.board !== snapshot
       this.patch({
         saving: false,
         dirty: changedWhileSaving,
         queued,
-        updatedAt: entry.updatedAt,
+        // 离线队列保留服务端基线，避免下一次保存把本地时间戳当成版本
+        updatedAt: queued ? writtenBase : entry.updatedAt,
         offline: queued,
         pendingSync: await getClient().pendingCount(),
       })
@@ -487,7 +648,13 @@ class BoardStore {
       return true
     } catch (err) {
       this.patch({ saving: false })
-      toast.error('保存失败', err instanceof Error ? err.message : '请检查同步配置')
+      if (err instanceof ConflictError) {
+        toast.warning('保存冲突', '数据已被其他设备修改，已保留本地改动；请刷新后再处理')
+      } else if (err instanceof SaveError) {
+        toast.error('保存被拒绝', err.message)
+      } else {
+        toast.error('保存失败', err instanceof Error ? err.message : '请检查同步配置')
+      }
       return false
     }
   }
@@ -496,45 +663,120 @@ class BoardStore {
   /* 学生 / 科目 / 考试                                                 */
   /* ---------------------------------------------------------------- */
 
-  async setStudents(names: string[]) {
-    if (!this.ensureEditable()) return
+  private catalogWritable(): boolean {
+    if (getSetting<string>('server.provider') === 'cloud' && !this.state.catalogLoaded) {
+      toast.error('名单/科目尚未加载完成', '为避免覆盖云端数据，请刷新并成功加载后再修改')
+      return false
+    }
+    return true
+  }
+
+  private enqueueCatalogWrite<T>(task: () => Promise<T>): Promise<T> {
+    const next = this.catalogWriteChain.then(task, task)
+    this.catalogWriteChain = next.catch(() => undefined)
+    return next
+  }
+
+  private writeCatalog<T>(
+    key: string,
+    value: T,
+  ): Promise<{ queued: boolean; updatedAt: number } | null> {
+    return this.enqueueCatalogWrite(async () => {
+      try {
+        const client = getClient()
+        const { entry, queued } = await client.set(key, value, {
+          baseUpdatedAt: this.catalogUpdatedAt[key] ?? null,
+        })
+        if (!queued) this.catalogUpdatedAt[key] = entry.updatedAt
+        return { queued, updatedAt: entry.updatedAt }
+      } catch (err) {
+        if (err instanceof ConflictError) {
+          toast.warning('保存冲突', '数据已被其他设备修改，请刷新后重试')
+        } else if (err instanceof SaveError) {
+          toast.error('保存被拒绝', err.message)
+        } else {
+          toast.error('保存失败', err instanceof Error ? err.message : '请检查网络')
+        }
+        return null
+      }
+    })
+  }
+
+  async setStudents(names: string[]): Promise<boolean> {
+    if (!this.ensureEditable() || !this.catalogWritable()) return false
     const clean = Array.from(new Set(names.map((n) => n.trim()).filter(Boolean)))
+    const previous = this.state.students
+    // 先同步更新内存，保证快速连续增删都基于最新名单；写入失败再回滚
     this.patch({ students: clean })
-    const { queued } = await getClient().set(
+    const saved = await this.writeCatalog(
       KEYS.students,
       clean.map((name) => ({ name })),
     )
+    if (!saved) {
+      // 只有当前状态仍是这次写入的值时才回滚，避免覆盖后续快速操作
+      if (this.state.students === clean) this.patch({ students: previous })
+      return false
+    }
     broadcastChange(KEYS.students)
-    if (queued) toast.warning('已保存到本地', '学生名单将在联网后同步')
+
+    // 删除学生后同步清理当前看板的出勤名单，避免统计出现“幽灵学生”
+    const valid = new Set(clean)
+    const attendance = this.state.board.attendance
+    const nextAttendance: Attendance = {
+      absent: attendance.absent.filter((name) => valid.has(name)),
+      late: attendance.late.filter((name) => valid.has(name)),
+      exclude: attendance.exclude.filter((name) => valid.has(name)),
+    }
+    if (
+      nextAttendance.absent.length !== attendance.absent.length ||
+      nextAttendance.late.length !== attendance.late.length ||
+      nextAttendance.exclude.length !== attendance.exclude.length
+    ) {
+      this.commitBoard({ ...this.state.board, attendance: nextAttendance })
+    }
+
+    try {
+      this.patch({ pendingSync: await getClient().pendingCount() })
+    } catch {
+      /* ignore */
+    }
+    if (saved.queued) toast.warning('已保存到本地', '学生名单将在联网后同步')
+    return true
   }
 
-  async setSubjects(subjects: Subject[]) {
-    if (!this.ensureEditable()) return { renamed: 0, queued: false }
-    const previous = this.state.subjects.map((item) => item.name)
+  addStudents(names: string[]): Promise<boolean> {
+    return this.setStudents([...this.state.students, ...names])
+  }
+
+  removeStudent(name: string): Promise<boolean> {
+    return this.setStudents(this.state.students.filter((item) => item !== name))
+  }
+
+  async setSubjects(
+    subjects: Subject[],
+    options: { renames?: { from: string; to: string }[] } = {},
+  ): Promise<{ saved: boolean; renamed: number; queued: boolean }> {
+    if (!this.ensureEditable() || !this.catalogWritable()) {
+      return { saved: false, renamed: 0, queued: false }
+    }
     const clean = subjects
       .map((s, index) => ({ name: s.name.trim(), order: index }))
       .filter((s) => s.name.length > 0)
-    const nextNames = clean.map((item) => item.name)
+    const renames = (options.renames ?? []).filter(
+      (item) => item.from && item.to && item.from !== item.to,
+    )
 
-    // 同步位置的旧名 → 新名视为改名；仅调整顺序时集合不变，不会误判
-    const removed = previous.filter((name) => !nextNames.includes(name))
-    const renames: { from: string; to: string }[] = []
-    for (const from of removed) {
-      const index = previous.indexOf(from)
-      const candidate = nextNames[index]
-      if (!candidate || previous.includes(candidate)) continue
-      if (renames.some((item) => item.to === candidate)) continue
-      renames.push({ from, to: candidate })
-    }
+    const saved = await this.writeCatalog(KEYS.subjects, clean)
+    if (!saved) return { saved: false, renamed: 0, queued: false }
 
     this.patch({ subjects: clean })
-    const { queued } = await getClient().set(KEYS.subjects, clean)
     broadcastChange(KEYS.subjects)
-    if (queued) toast.warning('已保存到本地', '科目表将在联网后同步')
+    if (saved.queued) toast.warning('已保存到本地', '科目表将在联网后同步')
 
     // 改名后迁移历史作业键，否则旧作业会留在孤立键里（D7）
-    for (const item of renames) await this.renameSubject(item.from, item.to)
-    return { renamed: renames.length, queued }
+    let renamed = 0
+    for (const item of renames) renamed += await this.renameSubject(item.from, item.to)
+    return { saved: true, renamed, queued: saved.queued }
   }
 
   /**
@@ -548,6 +790,21 @@ class BoardStore {
     const client = getClient()
     const currentKey = KEYS.board(this.state.dateKey)
 
+    let listed: KeyList
+    try {
+      listed = await client.list(KEYS.board(''))
+    } catch (err) {
+      toast.warning('历史作业迁移中止', err instanceof Error ? err.message : '无法读取历史日期列表')
+      return 0
+    }
+    if (listed.truncated) {
+      toast.warning('历史作业迁移中止', '历史数据键过多，无法安全完成全量迁移')
+      return 0
+    }
+    if (listed.stale) {
+      toast.warning('正在使用本地缓存迁移', '联网后请再次执行改名以补齐未缓存的历史日期')
+    }
+
     // 当前日期先改内存，界面立即正确
     const currentHomework = this.state.board.homework
     if (currentHomework[from]) {
@@ -559,8 +816,7 @@ class BoardStore {
 
     let migrated = 0
     try {
-      const keys = await client.list(KEYS.board(''))
-      for (const { key } of keys) {
+      for (const { key } of listed.keys) {
         if (key === currentKey) continue
         const entry = await client.get<BoardData>(key)
         if (!entry) continue
@@ -568,7 +824,7 @@ class BoardStore {
         if (!board.homework[from]) continue
         board.homework[target] = { ...board.homework[from] }
         delete board.homework[from]
-        await client.set(key, board)
+        await client.set(key, board, { baseUpdatedAt: entry.updatedAt })
         migrated += 1
       }
     } catch (err) {
@@ -579,25 +835,99 @@ class BoardStore {
     return migrated
   }
 
-  async saveExam(exam: ExamConfig) {
-    if (!this.ensureEditable()) return
+  async saveExam(exam: ExamConfig): Promise<boolean> {
+    if (!this.ensureEditable() || !this.catalogWritable()) return false
     const exists = this.state.exams.some((item) => item.id === exam.id)
     const next = exists
       ? this.state.exams.map((item) => (item.id === exam.id ? exam : item))
       : [...this.state.exams, exam]
+    const saved = await this.writeCatalog(KEYS.exams, next)
+    if (!saved) return false
     this.patch({ exams: next })
-    await getClient().set(KEYS.exams, next)
     broadcastChange(KEYS.exams)
     toast.success('已保存', exam.examName)
+    return true
   }
 
-  async deleteExam(id: string) {
-    if (!this.ensureEditable()) return
+  async deleteExam(id: string): Promise<boolean> {
+    if (!this.ensureEditable() || !this.catalogWritable()) return false
+    if (!this.state.loaded) {
+      toast.error('作业板尚未加载完成', '请刷新后再删除考试，避免留下孤立卡片')
+      return false
+    }
+    if (this.state.dirty || this.state.saving) {
+      toast.warning('请先保存当前改动', '删除考试会修改所有日期的作业板，避免覆盖未保存内容')
+      return false
+    }
+    const client = getClient()
+    let listed: KeyList
+    try {
+      listed = await client.list(KEYS.board(''))
+    } catch (err) {
+      toast.error('无法读取作业板', err instanceof Error ? err.message : '未删除考试')
+      return false
+    }
+    if (listed.truncated || listed.stale) {
+      toast.warning(
+        '未删除考试',
+        listed.stale
+          ? '离线状态无法确认所有日期的考试卡片，请联网后重试'
+          : '数据键过多，无法安全清理所有日期的考试卡片',
+      )
+      return false
+    }
+
+    // 先删除考试配置；即便后续卡片清理失败，也只会留下可点击移除的孤儿卡片
     const next = this.state.exams.filter((item) => item.id !== id)
+    const saved = await this.writeCatalog(KEYS.exams, next)
+    if (!saved) return false
     this.patch({ exams: next })
-    await getClient().set(KEYS.exams, next)
     broadcastChange(KEYS.exams)
-    toast.success('已删除', '考试配置已移除')
+
+    // 再清理所有日期的看板卡片
+    const cardKey = `exam-${id}`
+    const currentKey = KEYS.board(this.state.dateKey)
+    let currentSavedAt: number | null = null
+    let currentQueued = false
+    let cleanupFailed = false
+    for (const { key } of listed.keys) {
+      try {
+        const entry = await client.get<BoardData>(key)
+        if (!entry) continue
+        const board = normalizeBoard(entry.value)
+        if (!board.homework[cardKey]) continue
+        delete board.homework[cardKey]
+        const { entry: written, queued } = await client.set(key, board, {
+          baseUpdatedAt: entry.updatedAt,
+        })
+        if (key === currentKey) {
+          currentSavedAt = written.updatedAt
+          currentQueued = queued
+        }
+      } catch (err) {
+        cleanupFailed = true
+        toast.warning(
+          '考试已删除，但部分卡片未清理',
+          err instanceof Error ? err.message : '请回到对应日期手动移除卡片',
+        )
+        break
+      }
+    }
+
+    if (currentSavedAt !== null && this.state.board.homework[cardKey]) {
+      const homework = { ...this.state.board.homework }
+      delete homework[cardKey]
+      this.patch({
+        board: { ...this.state.board, homework },
+        updatedAt: currentSavedAt,
+        dirty: false,
+        queued: currentQueued,
+        offline: currentQueued,
+      })
+    }
+
+    if (!cleanupFailed) toast.success('已删除', '考试配置已移除')
+    return true
   }
 
   /* ---------------------------------------------------------------- */
@@ -625,9 +955,17 @@ class BoardStore {
     if (this.state.dirty || this.state.saving) return
     if (typeof document !== 'undefined' && document.hidden) return
 
+    // 花名册/科目/考试也做低频同步，避免多端只同步作业板
+    if (Date.now() - this.lastCatalogPoll > 60_000) {
+      this.lastCatalogPoll = Date.now()
+      void this.loadCatalog()
+    }
+
     try {
       const entry = await getClient().get<BoardData>(KEYS.board(this.state.dateKey))
       if (!entry) return
+      // 请求期间用户开始编辑：放弃本次远程更新
+      if (this.state.dirty || this.state.saving) return
       if (entry.updatedAt !== this.state.updatedAt) {
         this.patch({
           board: normalizeBoard(entry.value),
@@ -702,11 +1040,25 @@ class BoardStore {
     if (flushed > 0) {
       toast.success('网络已恢复', `已补传 ${flushed} 条离线改动`)
       this.patch({ pendingSync: await getClient().pendingCount() })
+      // 补传后把本地时间戳换成服务端时间戳，并刷新目录版本
+      if (!this.state.dirty && !this.state.saving) {
+        void this.loadBoard(true)
+        void this.loadCatalog()
+      }
     }
   }
 
   private handleOffline = () => {
     this.patch({ offline: true })
+  }
+
+  private handleSyncError = (event: Event) => {
+    const detail = (event as CustomEvent<{ message?: string }>).detail
+    toast.warning('同步冲突', detail?.message ?? '离线改动与云端版本冲突，已保留本地副本')
+    void getClient()
+      .pendingCount()
+      .then((count) => this.patch({ pendingSync: count }))
+      .catch(() => undefined)
   }
 
   private handleVisibility = () => {
@@ -716,11 +1068,20 @@ class BoardStore {
   }
 
   /** 设置变更后重建客户端并重新载入 */
-  async reinitialize() {
+  async reinitialize(): Promise<boolean> {
     this.flushPendingSave()
+    if (this.state.dirty) {
+      const ok = await this.save({ silent: true, auto: this.canAutoSave() })
+      if (!ok && this.state.dirty) {
+        toast.warning('未切换数据源', '当前改动尚未保存，请先上传或撤销')
+        return false
+      }
+    }
     const mode = refreshClient()
-    this.patch({ source: mode, status: 'loading' })
-    await Promise.all([this.loadCatalog(), this.loadBoard(true)])
+    this.patch({ source: mode, status: 'loading', loaded: false, catalogLoaded: false })
+    const [catalogOk, boardOk] = await Promise.all([this.loadCatalog(), this.loadBoard(true)])
+    if (!catalogOk) toast.warning('部分配置加载失败', '学生名单/科目/考试仍使用本地数据')
+    return boardOk
   }
 
   /**
@@ -758,9 +1119,9 @@ class BoardStore {
     }
 
     this.patch({ board: { homework, attendance }, dirty: true })
-    await this.save({ silent: true })
-    toast.success('已载入示例作业', '可直接编辑或清空')
-    return true
+    const saved = await this.save({ silent: true })
+    if (saved) toast.success('已载入示例作业', '可直接编辑或清空')
+    return saved
   }
 
   destroy() {
@@ -770,6 +1131,7 @@ class BoardStore {
     if (typeof window !== 'undefined') {
       window.removeEventListener('online', this.handleOnline)
       window.removeEventListener('offline', this.handleOffline)
+      window.removeEventListener('classworks-lite:sync-error', this.handleSyncError)
       window.removeEventListener(ACCESS_STATUS_EVENT, this.handleAccessStatus)
       document.removeEventListener('visibilitychange', this.handleVisibility)
     }
@@ -791,11 +1153,18 @@ export function countLines(content: string): number {
   return content.split('\n').filter((line) => line.trim()).length
 }
 
-export function attendanceStats(board: BoardData, studentCount: number) {
-  const { absent, late, exclude } = board.attendance
+export function attendanceStats(board: BoardData, students: string[]) {
+  const names = new Set(students)
+  // 历史看板可能残留已从花名册删除的姓名，统计时按当前名单过滤
+  const absent = board.attendance.absent.filter((name) => names.has(name))
+  const late = board.attendance.late.filter((name) => names.has(name))
+  const exclude = board.attendance.exclude.filter((name) => names.has(name))
   const lateCounts = getSetting<boolean>('display.lateStudentsArePresent')
-  const expected = Math.max(0, studentCount - exclude.length)
-  const present = Math.max(0, studentCount - absent.length - exclude.length - (lateCounts ? 0 : late.length))
+  const expected = Math.max(0, students.length - exclude.length)
+  const present = Math.max(
+    0,
+    students.length - absent.length - exclude.length - (lateCounts ? 0 : late.length),
+  )
   return { expected, present, absent: absent.length, late: late.length, exclude: exclude.length }
 }
 

@@ -1,7 +1,10 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { MdiIcon } from '../MdiIcon'
 import { useMediaQuery } from '../../lib/hooks'
+
+/** 嵌套弹窗只允许最上层处理 Tab/Escape，避免焦点被外层抢走 */
+const modalStack: symbol[] = []
 
 interface ModalProps {
   open: boolean
@@ -41,32 +44,68 @@ export function Modal({
   bare = false,
 }: ModalProps) {
   const panelRef = useRef<HTMLDivElement>(null)
+  const titleId = useId()
   const mobile = useMediaQuery('(max-width: 599px)')
   const fullscreen = fullscreenOnMobile && mobile
   const [scrollbarWidth, setScrollbarWidth] = useState(0)
+  const onCloseRef = useRef(onClose)
+  const closableRef = useRef(closable)
+  onCloseRef.current = onClose
+  closableRef.current = closable
 
   useEffect(() => {
     if (!open) return
+    const token = Symbol('modal')
+    modalStack.push(token)
+    const previousActive =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null
     const previousOverflow = document.body.style.overflow
     const previousPadding = document.body.style.paddingRight
     const scrollbar = window.innerWidth - document.documentElement.clientWidth
     setScrollbarWidth(scrollbar > 0 ? scrollbar : 0)
     document.body.style.overflow = 'hidden'
     if (scrollbar > 0) document.body.style.paddingRight = `${scrollbar}px`
+
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && closable) {
+      if (modalStack[modalStack.length - 1] !== token) return
+      if (event.key === 'Escape' && closableRef.current) {
         event.stopPropagation()
-        onClose()
+        onCloseRef.current()
+        return
+      }
+      if (event.key !== 'Tab' || !panelRef.current) return
+      const focusable = Array.from(
+        panelRef.current.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      ).filter((element) => element.getClientRects().length > 0)
+      if (focusable.length === 0) {
+        event.preventDefault()
+        panelRef.current.focus()
+        return
+      }
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      const active = document.activeElement
+      if (event.shiftKey && (active === first || !panelRef.current.contains(active))) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && (active === last || !panelRef.current.contains(active))) {
+        event.preventDefault()
+        first.focus()
       }
     }
     window.addEventListener('keydown', onKey)
     return () => {
+      const index = modalStack.lastIndexOf(token)
+      if (index >= 0) modalStack.splice(index, 1)
       document.body.style.overflow = previousOverflow
       document.body.style.paddingRight = previousPadding
       setScrollbarWidth(0)
       window.removeEventListener('keydown', onKey)
+      if (previousActive?.isConnected) previousActive.focus()
     }
-  }, [open, onClose, closable])
+  }, [open])
 
   useEffect(() => {
     if (open) panelRef.current?.focus()
@@ -79,6 +118,7 @@ export function Modal({
       className="v-overlay"
       role="dialog"
       aria-modal="true"
+      aria-labelledby={title ? titleId : undefined}
       style={scrollbarWidth ? { paddingRight: 24 + scrollbarWidth } : undefined}
     >
       <div
@@ -102,7 +142,11 @@ export function Modal({
         {(title || closable) && (
           <header className="d-flex align-center" style={{ padding: '8px 8px 8px 16px', gap: 8 }}>
             <div className="flex-grow-1" style={{ minWidth: 0 }}>
-              {title && <div className="v-card-title" style={{ padding: 0, minHeight: 40 }}>{title}</div>}
+              {title && (
+                <div id={titleId} className="v-card-title" style={{ padding: 0, minHeight: 40 }}>
+                  {title}
+                </div>
+              )}
               {subtitle && (
                 <div className="v-card-subtitle" style={{ padding: '4px 0 0' }}>
                   {subtitle}

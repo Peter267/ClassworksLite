@@ -57,6 +57,62 @@ export interface NoiseControlSettings {
   maxLevelDb: number
 }
 
+export type MicPermissionState = 'granted' | 'prompt' | 'denied' | 'unavailable' | ''
+
+export interface NoiseSession {
+  name: string
+  start: string
+  duration: number
+  enabled: boolean
+}
+
+export interface NoiseSessionConfig {
+  sessions: NoiseSession[]
+  alertThresholdDb: number
+}
+
+export interface NoiseSchedule extends NoiseSessionConfig {
+  autoStart: boolean
+  permission: MicPermissionState
+}
+
+/** 当前生效的晚自习时段；重叠时取开始时间最晚的一段 */
+export function activeSession(
+  config: NoiseSchedule | NoiseSessionConfig | null,
+  now = new Date(),
+): NoiseSession | null {
+  if (!config?.sessions) return null
+  const minutes = now.getHours() * 60 + now.getMinutes()
+  let matched: NoiseSession | null = null
+  let matchedStart = -1
+  for (const session of config.sessions) {
+    if (!session.enabled || !session.start) continue
+    const [h, m] = session.start.split(':').map(Number)
+    if (!Number.isFinite(h) || !Number.isFinite(m)) continue
+    const start = h * 60 + m
+    const duration = session.duration || 0
+    if (duration <= 0) continue
+    // 环形偏移支持 23:30 开始、跨到次日 00:30 的时段
+    const offset = (minutes - start + 1440) % 1440
+    if (offset < duration && start > matchedStart) {
+      matched = session
+      matchedStart = start
+    }
+  }
+  return matched
+}
+
+function sessionKey(session: NoiseSession | null): string | null {
+  return session ? `${session.name}|${session.start}` : null
+}
+
+function dateKey(timestamp: number) {
+  const d = new Date(timestamp)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(
+    d.getDate(),
+  ).padStart(2, '0')}`
+}
+
 const CALIBRATION_KEY = 'classworks-noise-calibration'
 const REPORTS_KEY = 'classworks-noise-reports'
 const DEFAULT_CALIBRATION: NoiseControlSettings = {
@@ -162,13 +218,6 @@ const SAMPLE_INTERVAL = 200
 const WINDOW_MS = 60_000
 const RING_CAPACITY = 300
 
-function todayKey() {
-  const d = new Date()
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(
-    d.getDate(),
-  ).padStart(2, '0')}`
-}
-
 class NoiseService {
   private status: NoiseStatus = 'initializing'
   private ctx: AudioContext | null = null
@@ -199,9 +248,17 @@ class NoiseService {
   private alertThresholdDb = 55
   /** 启动代次：stop 或新的 start 都会让在途的授权流程失效（F13） */
   private generation = 0
+  private schedule: NoiseSchedule | null = null
+  private scheduleTimer: number | null = null
+  private starting = false
+  private suppressedSessionKey: string | null = null
 
   getStatus() {
     return this.status
+  }
+
+  getSessionName() {
+    return this.sessionName
   }
 
   applyCalibration(next: NoiseControlSettings) {
@@ -211,6 +268,89 @@ class NoiseService {
   setSession(name: string, alertThresholdDb: number) {
     this.sessionName = name
     this.alertThresholdDb = alertThresholdDb
+  }
+
+  /** 由 UI 注入时段配置；服务层自己维护定时器，路由切换不会中断监测 */
+  setSchedule(schedule: NoiseSchedule | null) {
+    this.schedule = schedule
+      ? {
+          ...schedule,
+          sessions: schedule.sessions.map((session) => ({ ...session })),
+        }
+      : null
+    if (this.scheduleTimer) {
+      window.clearInterval(this.scheduleTimer)
+      this.scheduleTimer = null
+    }
+    if (!this.schedule) return
+    this.evaluateSchedule()
+    this.scheduleTimer = window.setInterval(() => this.evaluateSchedule(), 30_000)
+  }
+
+  /** 设置页修改时段后立即生效，保留自动开始与权限状态 */
+  updateScheduleConfig(config: NoiseSessionConfig) {
+    if (!this.schedule) return
+    this.setSchedule({
+      ...this.schedule,
+      sessions: config.sessions,
+      alertThresholdDb: config.alertThresholdDb,
+    })
+  }
+
+  setPermission(permission: MicPermissionState) {
+    if (!this.schedule) return
+    if (this.schedule.permission === permission) return
+    this.schedule.permission = permission
+    this.evaluateSchedule()
+  }
+
+  setAutoStart(autoStart: boolean) {
+    if (!this.schedule) return
+    if (this.schedule.autoStart === autoStart) return
+    this.schedule.autoStart = autoStart
+    this.evaluateSchedule()
+  }
+
+  private evaluateSchedule() {
+    if (!this.schedule) return
+    const current = activeSession(this.schedule)
+    const currentKey = sessionKey(current)
+    if (!current) {
+      this.suppressedSessionKey = null
+      if (this.status === 'active' && this.sessionName !== '自由监测') this.stop()
+      return
+    }
+    if (this.suppressedSessionKey && this.suppressedSessionKey !== currentKey) {
+      this.suppressedSessionKey = null
+    }
+    const threshold = this.schedule.alertThresholdDb ?? 55
+    if (this.status === 'active') {
+      if (this.sessionName !== current.name) {
+        // 时段切换：归档上一节，再以新时段继续采集（不重新申请麦克风）
+        this.finalizeReport()
+        this.beginSession(current.name, threshold)
+        this.emit()
+      } else {
+        this.alertThresholdDb = threshold
+      }
+      return
+    }
+    if (this.starting) return
+    if (!this.schedule.autoStart || this.schedule.permission !== 'granted') return
+    if (this.suppressedSessionKey === currentKey) return
+    if (this.status === 'permission-denied' || this.status === 'error') return
+    void this.startCurrent().catch(() => undefined)
+  }
+
+  /** 手动开始：当前处于时段内则使用时段名，否则作为自由监测 */
+  async startCurrent() {
+    const current = activeSession(this.schedule)
+    this.suppressedSessionKey = null
+    this.setSession(
+      current?.name ?? '自由监测',
+      this.schedule?.alertThresholdDb ?? 55,
+    )
+    return this.start()
   }
 
   subscribe(fn: (snapshot: NoiseSnapshot) => void) {
@@ -238,8 +378,26 @@ class NoiseService {
     this.listeners.forEach((fn) => fn(snap))
   }
 
+  private beginSession(name: string, alertThresholdDb: number) {
+    this.sessionName = name
+    this.alertThresholdDb = alertThresholdDb
+    this.sessionStart = Date.now()
+    this.sessionSamples = []
+    this.overThresholdMs = 0
+    this.segments = 0
+    this.wasLoud = false
+    this.sustainedStreak = 0
+    this.windowSlices = []
+    this.ringBuffer = []
+    this.lastSlice = null
+    this.currentScore = null
+    this.currentScoreDetail = null
+    this.currentDisplayDb = 0
+  }
+
   async start() {
-    if (this.status === 'active') return
+    if (this.status === 'active' || this.starting) return
+    this.starting = true
     const generation = (this.generation += 1)
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -255,7 +413,9 @@ class NoiseService {
         return
       }
       this.stream = stream
-      const AudioCtx = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
+      const AudioCtx =
+        window.AudioContext ??
+        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
       this.ctx = new AudioCtx()
       if (this.ctx.state === 'suspended') await this.ctx.resume()
       if (generation !== this.generation) {
@@ -271,20 +431,21 @@ class NoiseService {
       this.source.connect(this.analyser)
       this.buffer = new Float32Array(this.analyser.fftSize)
 
-      this.status = 'active'
-      this.sessionStart = Date.now()
-      this.sessionSamples = []
-      this.overThresholdMs = 0
-      this.segments = 0
-      this.wasLoud = false
-      this.sustainedStreak = 0
-      this.windowSlices = []
-      this.ringBuffer = []
       this.calibration = getNoiseControlSettings()
-
+      this.beginSession(this.sessionName, this.alertThresholdDb)
+      this.status = 'active'
       this.timer = window.setInterval(() => this.tick(), SAMPLE_INTERVAL)
       this.emit()
     } catch (error) {
+      // 授权成功但 AudioContext/分析器初始化失败时，必须释放麦克风
+      this.source?.disconnect()
+      this.stream?.getTracks().forEach((track) => track.stop())
+      void this.ctx?.close()
+      this.ctx = null
+      this.stream = null
+      this.analyser = null
+      this.source = null
+      this.buffer = null
       if (generation !== this.generation) return
       const err = error as DOMException
       this.status =
@@ -293,10 +454,15 @@ class NoiseService {
           : 'error'
       this.emit()
       throw error
+    } finally {
+      this.starting = false
     }
   }
 
-  stop() {
+  stop(options: { manual?: boolean } = {}) {
+    if (options.manual && this.schedule) {
+      this.suppressedSessionKey = sessionKey(activeSession(this.schedule))
+    }
     // 让在途的启动流程失效
     this.generation += 1
     if (this.timer) {
@@ -377,19 +543,23 @@ class NoiseService {
     // 持续：最长连续超阈值（以 200ms 切片计，约 2 秒才明显扣分）
     let streak = 0
     let maxStreak = 0
+    let windowSegments = 0
+    let wasLoud = false
     for (const item of this.windowSlices) {
-      if (item.displayDb > this.alertThresholdDb) {
+      const loud = item.displayDb > this.alertThresholdDb
+      if (loud) {
         streak += 1
         maxStreak = Math.max(maxStreak, streak)
+        if (!wasLoud) windowSegments += 1
       } else {
         streak = 0
       }
+      wasLoud = loud
     }
-    const sustainedPenalty = Math.min(40, Math.round((maxStreak * 0.2) * 2))
+    const sustainedPenalty = Math.min(40, Math.round(maxStreak * 0.4))
     const timePenalty = Math.min(30, Math.round(ratio * 30))
-    // 60 秒窗口内每 6 次“由静到吵”记 3 分
-    const segmentsInWindow = Math.round((this.segments * WINDOW_MS) / Math.max(1, Date.now() - this.sessionStart))
-    const segmentPenalty = Math.min(30, Math.max(0, Math.round(segmentsInWindow * 3) - 0))
+    // 与报告口径一致：窗口内每次“由静到吵”计 3 分，第一次不扣
+    const segmentPenalty = Math.min(30, Math.max(0, (windowSegments - 1) * 3))
 
     const score = Math.max(0, Math.min(100, 100 - sustainedPenalty - timePenalty - segmentPenalty))
     this.currentScore = score
@@ -436,7 +606,7 @@ class NoiseService {
 
     const report: NoiseReport = {
       id: `noise-${this.sessionStart}`,
-      date: todayKey(),
+      date: dateKey(this.sessionStart),
       sessionName: this.sessionName,
       startTime: this.sessionStart,
       endTime: end,
@@ -504,3 +674,18 @@ class NoiseService {
 
 export const noiseService = new NoiseService()
 const service = noiseService
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('classworks-lite:settings', (event) => {
+    const detail = (event as CustomEvent<{ key?: string; value?: unknown }>).detail
+    if (detail?.key === 'noiseMonitor.enabled' && detail.value === false) {
+      noiseService.setSchedule(null)
+      noiseService.stop()
+    }
+    if (detail?.key === 'noiseMonitor.autoStart') {
+      noiseService.setAutoStart(detail.value === true)
+    }
+  })
+  // 关闭/刷新页面时尽量归档当前报告
+  window.addEventListener('pagehide', () => noiseService.stop())
+}

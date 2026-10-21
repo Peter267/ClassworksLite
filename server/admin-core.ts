@@ -207,8 +207,7 @@ async function collectRecords(
 /* 各管理动作                                                          */
 /* ------------------------------------------------------------------ */
 
-async function handleStats(backend: Backend, origin?: string): Promise<Response> {
-  const { records, truncated } = await collectRecords(backend)
+function statsFromRecords(records: KeyRecord[], truncated: boolean) {
   const groups = new Map<string, { id: string; label: string; keys: number; bytes: number }>()
   let totalBytes = 0
   let lastUpdated = 0
@@ -224,32 +223,46 @@ async function handleStats(backend: Backend, origin?: string): Promise<Response>
   }
 
   const since = Date.now() - 86_400_000
-  return json(
-    {
-      totalKeys: records.length,
-      totalBytes,
-      updatedLast24h: records.filter((record) => record.updatedAt >= since).length,
-      lastUpdated,
-      groups: [...groups.values()].sort((a, b) => b.keys - a.keys),
-      truncated,
-      logLimit: AUDIT_LIMIT,
-    },
-    200,
-    origin,
-  )
+  return {
+    totalKeys: records.length,
+    totalBytes,
+    updatedLast24h: records.filter((record) => record.updatedAt >= since).length,
+    lastUpdated,
+    groups: [...groups.values()].sort((a, b) => b.keys - a.keys),
+    truncated,
+    logLimit: AUDIT_LIMIT,
+  }
+}
+
+function keysFromRecords(records: KeyRecord[], truncated: boolean) {
+  return {
+    keys: records.map((record) => ({
+      key: record.key,
+      updatedAt: record.updatedAt,
+      size: record.size,
+      group: groupOf(record.key).id,
+    })),
+    truncated,
+  }
+}
+
+async function handleStats(backend: Backend, origin?: string): Promise<Response> {
+  const { records, truncated } = await collectRecords(backend)
+  return json(statsFromRecords(records, truncated), 200, origin)
 }
 
 async function handleKeys(backend: Backend, origin?: string): Promise<Response> {
   const { records, truncated } = await collectRecords(backend)
+  return json(keysFromRecords(records, truncated), 200, origin)
+}
+
+/** 概览一次扫描同时返回统计和键列表，避免打开后台时重复读取全部记录 */
+async function handleOverview(backend: Backend, origin?: string): Promise<Response> {
+  const { records, truncated } = await collectRecords(backend)
   return json(
     {
-      keys: records.map((record) => ({
-        key: record.key,
-        updatedAt: record.updatedAt,
-        size: record.size,
-        group: groupOf(record.key).id,
-      })),
-      truncated,
+      stats: statsFromRecords(records, truncated),
+      ...keysFromRecords(records, truncated),
     },
     200,
     origin,
@@ -308,7 +321,13 @@ async function handlePut(
         origin,
       )
     }
-  } else if (raw !== null) {
+  } else if (raw === null) {
+    return json(
+      { error: 'conflict', message: '数据已被删除，请刷新列表后重试' },
+      409,
+      origin,
+    )
+  } else {
     const current = parseRecord(raw)
     if (current.updatedAt !== base) {
       return json(
@@ -416,7 +435,9 @@ export async function handleAdmin(
   backend: Backend,
   options: AdminOptions = {},
 ): Promise<Response> {
-  const origin = options.corsOrigin
+  // 与 /api/kv 一致：默认允许跨域，但管理操作仍必须携带有效 Bearer 令牌
+  const origin = options.corsOrigin ?? '*'
+  const config: AdminOptions = { ...options, corsOrigin: origin }
 
   if (request.method === 'OPTIONS') {
     return new Response(null, { status: 204, headers: corsHeaders(origin) })
@@ -438,7 +459,7 @@ export async function handleAdmin(
   }
 
   const text = await request.text()
-  if (text.length > MAX_BODY_BYTES) {
+  if (byteLength(text) > MAX_BODY_BYTES) {
     return json({ error: 'payload_too_large', message: '请求体过大' }, 413, origin)
   }
 
@@ -453,10 +474,10 @@ export async function handleAdmin(
 
   const action = typeof body.action === 'string' ? body.action : ''
   if (action === 'login') {
-    if (text.length > MAX_LOGIN_BODY_BYTES) {
+    if (byteLength(text) > MAX_LOGIN_BODY_BYTES) {
       return json({ error: 'payload_too_large', message: '请求体过大' }, 413, origin)
     }
-    return handleLogin(request, backend, body, options)
+    return handleLogin(request, backend, body, config)
   }
 
   if (!action) {
@@ -481,6 +502,8 @@ export async function handleAdmin(
         return await handleStats(backend, origin)
       case 'keys':
         return await handleKeys(backend, origin)
+      case 'overview':
+        return await handleOverview(backend, origin)
       case 'get':
         return await handleGet(backend, body, origin)
       case 'put':
@@ -493,8 +516,15 @@ export async function handleAdmin(
       }
       case 'backup':
         return await handleBackup(backend, origin)
-      case 'clear_logs':
-        await clearAudit(backend)
+      case 'clear_logs': {
+        const cleared = await clearAudit(backend)
+        if (!cleared) {
+          return json(
+            { error: 'clear_failed', message: '部分日志删除失败，请稍后重试' },
+            500,
+            origin,
+          )
+        }
         await appendAudit(backend, {
           actor: 'admin',
           action: 'clear_logs',
@@ -502,18 +532,12 @@ export async function handleAdmin(
           ua: clientUserAgent(request),
         })
         return json({ ok: true }, 200, origin)
+      }
       default:
         return json({ error: 'unknown_action', message: '未知操作' }, 400, origin)
     }
   } catch (err) {
     console.error('[admin] 处理失败', err)
-    return json(
-      {
-        error: 'internal_error',
-        message: err instanceof Error ? err.message : '未知错误',
-      },
-      500,
-      origin,
-    )
+    return json({ error: 'internal_error', message: '服务器处理失败' }, 500, origin)
   }
 }

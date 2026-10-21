@@ -40,12 +40,47 @@ export class NetworkError extends Error {
   }
 }
 
+/** 服务端明确拒绝了请求（如 413/409），不应作为离线改动反复重试 */
+export class SaveError extends Error {
+  readonly status: number
+
+  constructor(message: string, status: number) {
+    super(message)
+    this.name = 'SaveError'
+    this.status = status
+  }
+}
+
+/** 云端数据已被其他设备修改 */
+export class ConflictError extends Error {
+  readonly updatedAt?: number
+
+  constructor(message = '数据已被其他设备修改，请刷新后重试', updatedAt?: number) {
+    super(message)
+    this.name = 'ConflictError'
+    this.updatedAt = updatedAt
+  }
+}
+
+export interface SetOptions {
+  /** number 表示期望的云端版本；null 表示期望该键尚不存在 */
+  baseUpdatedAt?: number | null
+}
+
 export interface KVClient {
   readonly mode: ProviderMode
   get<T>(key: string): Promise<KVEntry<T> | null>
-  set<T>(key: string, value: T): Promise<{ entry: KVEntry<T>; queued: boolean }>
+  set<T>(
+    key: string,
+    value: T,
+    options?: SetOptions,
+  ): Promise<{ entry: KVEntry<T>; queued: boolean }>
   remove(key: string): Promise<{ queued: boolean }>
-  list(prefix?: string): Promise<{ key: string; updatedAt: number }[]>
+  list(prefix?: string): Promise<{
+    keys: { key: string; updatedAt: number }[]
+    truncated: boolean
+    stale?: boolean
+  }>
   /** 补传离线期间的写入，返回成功条数 */
   flush(): Promise<number>
   /** 未同步条数 */
@@ -67,7 +102,7 @@ export class LocalClient implements KVClient {
 
   async set<T>(key: string, value: T) {
     const entry: KVEntry<T> = { value, updatedAt: Date.now() }
-    await cacheSet({ key, value, updatedAt: entry.updatedAt })
+    await cacheSet({ key, value, updatedAt: entry.updatedAt, synced: false })
     return { entry, queued: false }
   }
 
@@ -78,9 +113,13 @@ export class LocalClient implements KVClient {
 
   async list(prefix = '') {
     const all = await cacheAll()
-    return all
-      .filter((record) => record.key.startsWith(prefix))
-      .map((record) => ({ key: record.key, updatedAt: record.updatedAt }))
+    return {
+      keys: all
+        .filter((record) => record.key.startsWith(prefix))
+        .map((record) => ({ key: record.key, updatedAt: record.updatedAt })),
+      truncated: false,
+      stale: false,
+    }
   }
 
   async flush() {
@@ -117,15 +156,33 @@ if (typeof window !== 'undefined') {
   window.addEventListener('classworks-lite:edit-token-changed', () => {
     editDenied = false
   })
+  window.addEventListener('classworks-lite:edit-authorized', () => {
+    editDenied = false
+  })
 }
 
 function ensureWriteAllowed() {
   if (editDenied) throw new EditAuthError()
 }
 
-async function readError(response: Response): Promise<{ error?: string; message?: string }> {
+function notifySyncError(key: string, message: string) {
+  if (typeof window === 'undefined') return
+  window.dispatchEvent(
+    new CustomEvent('classworks-lite:sync-error', { detail: { key, message } }),
+  )
+}
+
+async function readError(response: Response): Promise<{
+  error?: string
+  message?: string
+  updatedAt?: number
+}> {
   try {
-    return (await response.json()) as { error?: string; message?: string }
+    return (await response.json()) as {
+      error?: string
+      message?: string
+      updatedAt?: number
+    }
   } catch {
     return {}
   }
@@ -198,14 +255,19 @@ export class CloudClient implements KVClient {
     try {
       const response = await request(`/api/kv?key=${encodeURIComponent(key)}`)
       if (response.status === 404) {
-        // 云端已删除：清理本地缓存，避免展示幽灵数据
-        if (cached) await cacheDelete(key)
+        // 云端已删除：只清理明确来自云端的缓存；本地模式/旧版本地数据不能被云端 404 清掉
+        if (cached?.synced === true) await cacheDelete(key)
         return null
       }
       if (!response.ok) throw new NetworkError(`服务端返回 ${response.status}`)
       const data = (await response.json()) as { value: T; updatedAt: number }
       try {
-        await cacheSet({ key, value: data.value, updatedAt: data.updatedAt })
+        await cacheSet({
+          key,
+          value: data.value,
+          updatedAt: data.updatedAt,
+          synced: true,
+        })
       } catch (err) {
         console.warn('[kv] 云端读取成功但本地缓存写入失败', err)
       }
@@ -220,36 +282,81 @@ export class CloudClient implements KVClient {
           pending: cached.pending,
         }
       }
-      return null
+      // 没有缓存时不能把网络/服务端错误伪装成“数据不存在”，否则上层会生成空板并覆盖云端
+      if (err instanceof NetworkError) throw err
+      throw new NetworkError(err instanceof Error ? err.message : '读取云端数据失败')
     }
   }
 
-  async set<T>(key: string, value: T) {
+  async set<T>(key: string, value: T, options: SetOptions = {}) {
     ensureWriteAllowed()
     const localUpdatedAt = Date.now()
+    const cached = await cacheGet(key)
+    // 显式传入的基线优先（冲突重试/条件写）；否则沿用在途离线副本的原始基线
+    const hasExplicitBase = 'baseUpdatedAt' in options
+    const baseUpdatedAt = hasExplicitBase
+      ? options.baseUpdatedAt ?? null
+      : cached?.pending && 'baseUpdatedAt' in cached
+        ? (cached.baseUpdatedAt ?? null)
+        : null
+    const hasBase = hasExplicitBase || Boolean(cached?.pending)
     try {
+      const payload: { key: string; value: T; baseUpdatedAt?: number | null } = { key, value }
+      if (hasBase) payload.baseUpdatedAt = baseUpdatedAt
       const response = await request(
         '/api/kv',
         {
           method: 'PUT',
-          body: JSON.stringify({ key, value }),
+          body: JSON.stringify(payload),
         },
         true,
       )
-      if (!response.ok) throw new NetworkError(`服务端返回 ${response.status}`)
+      if (response.status === 409) {
+        const error = await readError(response)
+        throw new ConflictError(
+          error.message ?? '数据已被其他设备修改，请刷新后重试',
+          error.updatedAt,
+        )
+      }
+      if (!response.ok) {
+        const error = await readError(response)
+        if (response.status >= 400 && response.status < 500) {
+          throw new SaveError(error.message ?? `服务端拒绝写入（${response.status}）`, response.status)
+        }
+        throw new NetworkError(`服务端返回 ${response.status}`)
+      }
       editDenied = false
       const data = (await response.json()) as { updatedAt: number }
       const entry: KVEntry<T> = { value, updatedAt: data.updatedAt }
       try {
-        await cacheSet({ key, value, updatedAt: data.updatedAt })
+        await cacheSet({
+          key,
+          value,
+          updatedAt: data.updatedAt,
+          synced: true,
+        })
       } catch (err) {
         console.warn('[kv] 云端写入成功但本地缓存写入失败', err)
       }
       return { entry, queued: false }
     } catch (err) {
-      if (err instanceof AuthError || err instanceof EditAuthError) throw err
+      if (
+        err instanceof AuthError ||
+        err instanceof EditAuthError ||
+        err instanceof ConflictError ||
+        err instanceof SaveError
+      ) {
+        throw err
+      }
       // 离线降级：写入本地并标记待同步（写不进去会抛错，避免谎报成功）
-      await cacheSet({ key, value, updatedAt: localUpdatedAt, pending: true })
+      await cacheSet({
+        key,
+        value,
+        updatedAt: localUpdatedAt,
+        pending: true,
+        synced: false,
+        ...(hasBase ? { baseUpdatedAt } : {}),
+      })
       return { entry: { value, updatedAt: localUpdatedAt, pending: true }, queued: true }
     }
   }
@@ -262,13 +369,27 @@ export class CloudClient implements KVClient {
         { method: 'DELETE' },
         true,
       )
-      if (!response.ok) throw new NetworkError(`服务端返回 ${response.status}`)
+      if (!response.ok) {
+        const error = await readError(response)
+        if (response.status >= 400 && response.status < 500) {
+          throw new SaveError(error.message ?? `服务端拒绝删除（${response.status}）`, response.status)
+        }
+        throw new NetworkError(`服务端返回 ${response.status}`)
+      }
       editDenied = false
       await cacheDelete(key)
       return { queued: false }
     } catch (err) {
-      if (err instanceof AuthError || err instanceof EditAuthError) throw err
-      await cacheSet({ key, value: null, updatedAt: Date.now(), pending: true })
+      if (err instanceof AuthError || err instanceof EditAuthError || err instanceof SaveError) {
+        throw err
+      }
+      await cacheSet({
+        key,
+        value: null,
+        updatedAt: Date.now(),
+        pending: true,
+        synced: false,
+      })
       return { queued: true }
     }
   }
@@ -277,14 +398,22 @@ export class CloudClient implements KVClient {
     try {
       const response = await request(`/api/kv?prefix=${encodeURIComponent(prefix)}`)
       if (!response.ok) throw new NetworkError(`服务端返回 ${response.status}`)
-      const data = (await response.json()) as { keys: { key: string; updatedAt: number }[] }
-      return data.keys
+      const data = (await response.json()) as {
+        keys: { key: string; updatedAt: number }[]
+        truncated?: boolean
+      }
+      return { keys: data.keys, truncated: Boolean(data.truncated) }
     } catch (err) {
       if (err instanceof AuthError) throw err
+      // 离线时返回本地缓存并标记 stale；调用方决定是否继续全量操作
       const all = await cacheAll()
-      return all
-        .filter((record) => record.key.startsWith(prefix))
-        .map((record) => ({ key: record.key, updatedAt: record.updatedAt }))
+      return {
+        keys: all
+          .filter((record) => record.key.startsWith(prefix))
+          .map((record) => ({ key: record.key, updatedAt: record.updatedAt })),
+        truncated: false,
+        stale: true,
+      }
     }
   }
 
@@ -301,20 +430,73 @@ export class CloudClient implements KVClient {
             { method: 'DELETE' },
             true,
           )
-          if (!response.ok) continue
+          if (!response.ok) {
+            const error = await readError(response)
+            notifySyncError(record.key, error.message ?? `删除失败（${response.status}）`)
+            continue
+          }
           await cacheDelete(record.key)
         } else {
-          const response = await request(
-            '/api/kv',
-            {
-              method: 'PUT',
-              body: JSON.stringify({ key: record.key, value: record.value }),
-            },
-            true,
-          )
-          if (!response.ok) continue
+          let baseUpdatedAt = 'baseUpdatedAt' in record ? record.baseUpdatedAt ?? null : null
+          let rebased = false
+          let response: Response | null = null
+          for (let attempt = 0; ; attempt += 1) {
+            const payload: {
+              key: string
+              value: unknown
+              baseUpdatedAt?: number | null
+            } = { key: record.key, value: record.value }
+            if ('baseUpdatedAt' in record || attempt > 0) payload.baseUpdatedAt = baseUpdatedAt
+            response = await request(
+              '/api/kv',
+              {
+                method: 'PUT',
+                body: JSON.stringify(payload),
+              },
+              true,
+            )
+            if (response.status === 409 && attempt === 0) {
+              const error = await readError(response)
+              if (typeof error.updatedAt === 'number') {
+                baseUpdatedAt = error.updatedAt
+                rebased = true
+                notifySyncError(
+                  record.key,
+                  '检测到云端更新，正在用本地离线改动覆盖云端版本',
+                )
+                continue
+              }
+              if (baseUpdatedAt !== null) {
+                // 服务端对“期望存在但已被删除”的键返回不带 updatedAt 的 409：按新建重试
+                baseUpdatedAt = null
+                rebased = true
+                notifySyncError(record.key, '云端记录已删除，正在用本地内容重新创建')
+                continue
+              }
+            }
+            break
+          }
+          if (!response || !response.ok) {
+            if (rebased) {
+              // 记录新基线，避免下一次补传仍用旧版本反复 409
+              await cacheSet({
+                ...record,
+                baseUpdatedAt,
+                pending: true,
+                synced: false,
+              })
+            }
+            const error = response ? await readError(response) : {}
+            notifySyncError(record.key, error.message ?? '补传失败，已保留本地副本')
+            continue
+          }
           const data = (await response.json()) as { updatedAt: number }
-          await cacheSet({ key: record.key, value: record.value, updatedAt: data.updatedAt })
+          await cacheSet({
+            key: record.key,
+            value: record.value,
+            updatedAt: data.updatedAt,
+            synced: true,
+          })
         }
         done += 1
       } catch (err) {

@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Icon } from './Icon'
 import { Modal } from './ui/Modal'
+import { toDateKey, today } from '../lib/date'
 import { getClient } from '../lib/kv'
+import { getSetting } from '../lib/settings'
 import { store } from '../lib/store'
 import { toast } from '../lib/toast'
 import type { BoardData, Subject } from '../lib/types'
@@ -85,6 +87,7 @@ export function UafTransferDialog({
   /** 异步读取/解析序号：旧请求后返回时不得覆盖新选择（F19） */
   const exportSeq = useRef(0)
   const importSeq = useRef(0)
+  const previewSeq = useRef(0)
 
   const selectedAssignments = useMemo(
     () => rows.filter((row) => row.selected).map((row) => row.assignment),
@@ -124,10 +127,16 @@ export function UafTransferDialog({
   }, [])
 
   const loadBoard = useCallback(
-    async (date: string): Promise<BoardData> => {
-      if (date === currentDate) return cloneBoard(store.getSnapshot().board)
+    async (date: string): Promise<{ board: BoardData; updatedAt: number | null }> => {
+      if (date === currentDate) {
+        const snapshot = store.getSnapshot()
+        return { board: cloneBoard(snapshot.board), updatedAt: snapshot.updatedAt }
+      }
       const entry = await getClient().get<BoardData>(`classworks-data-${date}`)
-      return entry ? cloneBoard(entry.value) : cloneBoard(EMPTY_BOARD)
+      return {
+        board: entry ? cloneBoard(entry.value) : cloneBoard(EMPTY_BOARD),
+        updatedAt: entry?.updatedAt ?? null,
+      }
     },
     [currentDate],
   )
@@ -140,10 +149,8 @@ export function UafTransferDialog({
       setExportError('')
       try {
         const date = dateValue.replaceAll('-', '')
-        const items =
-          date === currentDate
-            ? itemsFromBoardData(store.getSnapshot().board, subjects)
-            : itemsFromBoardData(await loadBoard(date), subjects)
+        const loaded = await loadBoard(date)
+        const items = itemsFromBoardData(loaded.board, subjects)
         if (seq !== exportSeq.current) return
         setRows(createExportPreview(items, dateValue))
       } catch (error) {
@@ -177,9 +184,13 @@ export function UafTransferDialog({
     }
   }, [open, mode, currentDate, loadExportPreview, releasePreviewUrl])
 
-  /* 生成 PDF 预览（防抖 800ms） */
+  /* 生成 PDF 预览（防抖 800ms）；旧构建晚返回时直接丢弃 */
   useEffect(() => {
-    if (!open || mode !== 'export') return
+    const seq = (previewSeq.current += 1)
+    if (!open || mode !== 'export') {
+      setPreviewLoading(false)
+      return
+    }
     if (previewTimer.current) window.clearTimeout(previewTimer.current)
     if (styledAssignments.length === 0) {
       releasePreviewUrl()
@@ -192,16 +203,18 @@ export function UafTransferDialog({
     previewTimer.current = window.setTimeout(async () => {
       try {
         const pdfBytes = await buildUafPdfBytes(styledAssignments)
+        if (seq !== previewSeq.current) return
         const blob = new Blob([pdfBytes as BlobPart], { type: 'application/pdf' })
         releasePreviewUrl()
         const url = URL.createObjectURL(blob)
         previewUrlRef.current = url
         setPreviewUrl(url)
       } catch (error) {
+        if (seq !== previewSeq.current) return
         releasePreviewUrl()
         setPreviewError(formatError(error))
       } finally {
-        setPreviewLoading(false)
+        if (seq === previewSeq.current) setPreviewLoading(false)
       }
     }, 800)
     return () => {
@@ -228,6 +241,7 @@ export function UafTransferDialog({
   }
 
   const doExport = async () => {
+    if (busy || selectedAssignments.length === 0) return
     setBusy(true)
     try {
       const filename = await downloadUafAssignments(styledAssignments, exportDate)
@@ -262,14 +276,43 @@ export function UafTransferDialog({
   }
 
   const doImport = async () => {
-    if (!importPlan) return
+    if (!importPlan || busy) return
+    const activeRows = importPlan.rows.filter((row) => row.action !== 'keep')
+    const activeDates = [...new Set(activeRows.map((row) => row.date))]
+    const todayKey = toDateKey(today())
+    if (getSetting<boolean>('edit.blockPastDataEdit') && activeDates.some((date) => date < todayKey)) {
+      toast.warning('不能导入历史日期', '设置中已禁止编辑过往数据')
+      return
+    }
+    if (
+      getSetting<boolean>('edit.confirmNonTodaySave') &&
+      activeDates.some((date) => date !== todayKey) &&
+      typeof window.confirm === 'function' &&
+      !window.confirm('导入包含非当天日期，确定继续吗？')
+    ) {
+      return
+    }
+
     setBusy(true)
     try {
       const result = await executeImportPlan(importPlan, async (date, board) => {
-        await getClient().set(`classworks-data-${date}`, board)
+        await getClient().set(`classworks-data-${date}`, board, {
+          baseUpdatedAt: importPlan.versions.get(date) ?? null,
+        })
       })
       onImported()
       if (result.failedDates.length) {
+        // 已成功的日期标记为保留，重试时只处理失败日期，避免重复写入/创建卡片
+        setImportPlan((current) =>
+          current
+            ? {
+                ...current,
+                rows: current.rows.map((row) =>
+                  result.savedDates.includes(row.date) ? { ...row, action: 'keep' as const } : row,
+                ),
+              }
+            : current,
+        )
         toast.warning(
           '部分日期导入失败',
           `已保存：${result.savedDates.join('、') || '无'}\n失败：${result.failedDates
@@ -296,7 +339,7 @@ export function UafTransferDialog({
 
   const primaryDisabled =
     mode === 'export'
-      ? selectedAssignments.length === 0 || loadingPreview
+      ? selectedAssignments.length === 0 || loadingPreview || busy
       : !importPlan || planIssues.length > 0 || busy
 
   return (

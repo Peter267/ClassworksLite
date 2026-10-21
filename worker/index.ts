@@ -66,6 +66,16 @@ export default {
       })
     }
 
+    if (url.pathname.startsWith('/api/')) {
+      return new Response(JSON.stringify({ error: 'not_found' }), {
+        status: 404,
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Cache-Control': 'no-store',
+        },
+      })
+    }
+
     return env.ASSETS.fetch(request)
   },
 }

@@ -3850,3 +3850,37 @@
     }
   }
 }
+
+/* ==================== 打印 ==================== */
+@media print {
+  @page {
+    margin: 12mm;
+  }
+
+  body {
+    background: #fff !important;
+    color: #000 !important;
+  }
+
+  .v-app-bar,
+  .v-snackbar,
+  .floating-toolbar-container,
+  .side-action-btn,
+  .message-drawer-root,
+  .settings-drawer,
+  .settings-scrim,
+  .v-btn {
+    display: none !important;
+  }
+
+  .page-container {
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+  }
+
+  .v-card {
+    border-color: #ddd !important;
+    box-shadow: none !important;
+    break-inside: avoid;
+  }
+}

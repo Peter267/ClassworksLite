@@ -14,6 +14,10 @@ export interface RawRecord {
   value: unknown
   updatedAt: number
   pending?: boolean
+  /** 本地模式/离线待同步的数据没有云端副本，不能作为配额淘汰候选 */
+  synced?: boolean
+  /** 离线写入时记录的云端基线，补传时用于检测冲突 */
+  baseUpdatedAt?: number | null
 }
 
 /** 本地存储不可写（配额耗尽或存储被禁用） */
@@ -79,7 +83,7 @@ export async function cacheSet(record: RawRecord): Promise<void> {
     // 配额不足：只清理「已同步」的旧记录，绝不淘汰待上传的离线副本
     console.warn('[cache] 写入失败，尝试清理已同步的旧记录', err)
     const reclaimable = readAll()
-      .filter((item) => item.key !== record.key && !item.pending)
+      .filter((item) => item.key !== record.key && !item.pending && item.synced !== false)
       .sort((a, b) => a.updatedAt - b.updatedAt)
     for (const stale of reclaimable.slice(0, Math.max(1, Math.ceil(reclaimable.length / 3)))) {
       store.removeItem(PREFIX + stale.key)

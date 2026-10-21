@@ -15,9 +15,8 @@ export function ListPage({
 }) {
   const state = useAppState()
   const subjects = [...state.subjects].sort((a, b) => a.order - b.order)
-  const { absent, late, exclude } = state.board.attendance
   // 与首页共用同一套统计规则（是否把迟到计入实到）
-  const { present } = attendanceStats(state.board, state.students.length)
+  const { present, absent, late, exclude } = attendanceStats(state.board, state.students)
   const filled = subjects.filter((subject) => state.board.homework[subject.name]?.content?.trim())
 
   return (
@@ -54,10 +53,10 @@ export function ListPage({
                 实到 <b>{present}</b> / {state.students.length}
               </span>
               <span className="d-flex" style={{ gap: 16 }}>
-                {absent.length > 0 && <span className="text-error">请假 {absent.length}</span>}
-                {late.length > 0 && <span className="text-warning">迟到 {late.length}</span>}
-                {exclude.length > 0 && <span>不参与 {exclude.length}</span>}
-                {absent.length + late.length + exclude.length === 0 && (
+                {absent > 0 && <span className="text-error">请假 {absent}</span>}
+                {late > 0 && <span className="text-warning">迟到 {late}</span>}
+                {exclude > 0 && <span>不参与 {exclude}</span>}
+                {absent + late + exclude === 0 && (
                   <span className="text-success">全勤</span>
                 )}
               </span>

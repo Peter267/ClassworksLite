@@ -16,6 +16,31 @@ import { constantTimeEqual, createToken, verifyToken } from './token'
 const ACCESS_TTL_MS = 7 * 24 * 60 * 60 * 1000
 const MAX_BODY_BYTES = 16 * 1024
 const GUARD_KEY = '__access-guard'
+const STATUS_EDIT_LIMIT = 5
+const STATUS_EDIT_LOCK_MS = 10 * 60 * 1000
+const statusEditFailures = new Map<string, { n: number; first: number; until: number }>()
+
+function statusEditLocked(ip: string): boolean {
+  const entry = statusEditFailures.get(ip)
+  return Boolean(entry && entry.until > Date.now())
+}
+
+function recordStatusEditFailure(ip: string) {
+  const now = Date.now()
+  const current = statusEditFailures.get(ip)
+  const next =
+    current && now - current.first < STATUS_EDIT_LOCK_MS
+      ? current
+      : { n: 0, first: now, until: 0 }
+  next.n += 1
+  if (next.n >= STATUS_EDIT_LIMIT) next.until = now + STATUS_EDIT_LOCK_MS
+  statusEditFailures.set(ip, next)
+  if (statusEditFailures.size > 500) {
+    for (const [key, value] of statusEditFailures) {
+      if (value.until <= now) statusEditFailures.delete(key)
+    }
+  }
+}
 
 export interface AccessOptions {
   /** 站点访问密码；为空表示不启用密码门 */
@@ -111,10 +136,24 @@ async function handleStatus(
   request: Request,
   options: AccessOptions,
 ): Promise<Response> {
-  const [authenticated, editAuthenticated] = await Promise.all([
-    isViewAuthorized(request, options),
-    isEditAuthorized(request, options),
-  ])
+  const authenticated = await isViewAuthorized(request, options)
+  let editAuthenticated = false
+  if (authenticated) {
+    if (!options.editToken) {
+      editAuthenticated = true
+    } else {
+      const ip = clientIp(request)
+      const provided = request.headers.get('x-edit-token')?.trim()
+      if (provided && !statusEditLocked(ip)) {
+        editAuthenticated = await isEditAuthorized(request, options)
+        if (editAuthenticated) {
+          statusEditFailures.delete(ip)
+        } else {
+          recordStatusEditFailure(ip)
+        }
+      }
+    }
+  }
   return json(
     {
       passwordRequired: Boolean(options.sitePassword),
@@ -194,14 +233,16 @@ export async function handleAccess(
   backend: Backend,
   options: AccessOptions = {},
 ): Promise<Response> {
-  const origin = options.corsOrigin
+  // 与 /api/kv 保持一致：未配置 CORS_ORIGIN 时默认允许跨域（仅 Bearer/编辑令牌，不使用 Cookie）
+  const origin = options.corsOrigin ?? '*'
+  const config: AccessOptions = { ...options, corsOrigin: origin }
 
   if (request.method === 'OPTIONS') {
     return new Response(null, { status: 204, headers: corsHeaders(origin) })
   }
 
   if (request.method === 'GET') {
-    return handleStatus(request, options)
+    return handleStatus(request, config)
   }
 
   if (request.method !== 'POST') {
@@ -225,15 +266,11 @@ export async function handleAccess(
   const action = typeof body.action === 'string' ? body.action : 'login'
 
   try {
-    if (action === 'login') return await handleLogin(request, backend, body, options)
-    if (action === 'status') return await handleStatus(request, options)
+    if (action === 'login') return await handleLogin(request, backend, body, config)
+    if (action === 'status') return await handleStatus(request, config)
     return json({ error: 'unknown_action', message: '未知操作' }, 400, origin)
   } catch (err) {
     console.error('[auth] 处理失败', err)
-    return json(
-      { error: 'internal_error', message: err instanceof Error ? err.message : '未知错误' },
-      500,
-      origin,
-    )
+    return json({ error: 'internal_error', message: '服务器处理失败' }, 500, origin)
   }
 }
