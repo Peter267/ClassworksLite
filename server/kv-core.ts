@@ -9,12 +9,17 @@
  * 存储层只需要实现 Backend：读取、写入、删除、按前缀列出。
  */
 
+import { appendAudit, clientIp, clientUserAgent } from './audit'
+
 export interface StoredRecord {
   /** 业务数据本身 */
   v: unknown
   /** 写入时间戳（毫秒） */
   t: number
 }
+
+/** __ 前缀留给管理后台（日志、限流状态），普通接口不可读写 */
+const RESERVED_PREFIX = '__'
 
 export interface Backend {
   read(key: string): Promise<string | null>
@@ -57,6 +62,7 @@ function validKey(key: unknown): key is string {
     typeof key === 'string' &&
     key.length > 0 &&
     key.length <= MAX_KEY_LENGTH &&
+    !key.startsWith(RESERVED_PREFIX) &&
     !/[\u0000-\u001f\u007f]/.test(key)
   )
 }
@@ -82,6 +88,13 @@ export async function handleKV(
   if (options.siteToken) {
     const token = readToken(request)
     if (token !== options.siteToken) {
+      await appendAudit(backend, {
+        actor: 'site',
+        action: 'denied',
+        ip: clientIp(request),
+        ua: clientUserAgent(request),
+        note: '站点令牌无效',
+      })
       return json({ error: 'unauthorized', message: '访问令牌无效' }, 401, origin)
     }
   }
@@ -93,7 +106,9 @@ export async function handleKV(
   try {
     if (request.method === 'GET') {
       if (prefix !== null) {
-        const keys = await backend.scan(prefix)
+        const keys = (await backend.scan(prefix)).filter(
+          (name) => !name.startsWith(RESERVED_PREFIX),
+        )
         const detailed = await Promise.all(
           keys.slice(0, 500).map(async (name) => {
             const raw = await backend.read(name)
@@ -139,6 +154,14 @@ export async function handleKV(
 
       const record: StoredRecord = { v: body.value, t: Date.now() }
       await backend.write(body.key, JSON.stringify(record))
+      await appendAudit(backend, {
+        actor: 'site',
+        action: 'write',
+        key: body.key,
+        size: text.length,
+        ip: clientIp(request),
+        ua: clientUserAgent(request),
+      })
       return json({ key: body.key, updatedAt: record.t }, 200, origin)
     }
 
@@ -147,6 +170,13 @@ export async function handleKV(
         return json({ error: 'bad_request', message: '缺少或非法的 key' }, 400, origin)
       }
       await backend.remove(key)
+      await appendAudit(backend, {
+        actor: 'site',
+        action: 'delete',
+        key,
+        ip: clientIp(request),
+        ua: clientUserAgent(request),
+      })
       return json({ ok: true, key }, 200, origin)
     }
 

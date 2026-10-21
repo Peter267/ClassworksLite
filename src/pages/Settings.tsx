@@ -100,9 +100,16 @@ interface SettingsPageProps {
   openStudents: () => void
   openSubjects: () => void
   openExams: () => void
+  openAdmin: () => void
 }
 
-export function SettingsPage({ onBack, openStudents, openSubjects, openExams }: SettingsPageProps) {
+export function SettingsPage({
+  onBack,
+  openStudents,
+  openSubjects,
+  openExams,
+  openAdmin,
+}: SettingsPageProps) {
   useSettingsVersion()
   const state = useAppState()
   const [active, setActive] = useState<TabKey>(() => {
@@ -183,7 +190,7 @@ export function SettingsPage({ onBack, openStudents, openSubjects, openExams }: 
                   </p>
                   <div className="d-flex flex-column" style={{ gap: 6 }}>
                     <div>· 上游：Classworks（AGPL-3.0，作者 SunWuyuan / ZeroCat 社区）</div>
-                    <div>· 本版本：React 19 + Vite + 单函数 KV，新增 UAF 导入导出与环境噪音监测</div>
+                    <div>· 本版本：React 19 + Vite + 单函数 KV，新增 UAF 导入导出、环境噪音监测与密码保护的管理后台</div>
                     <div>· 数据兼容：沿用 <code>classworks-data-YYYYMMDD</code> 等键名，可直接读取上游数据</div>
                     <div>· 项目说明与部署方式见仓库根目录的 README.md 与 NOTICE.md</div>
                   </div>
@@ -201,6 +208,7 @@ export function SettingsPage({ onBack, openStudents, openSubjects, openExams }: 
                     <div>· 主题与组件样式：<code>src/index.css</code>（<code>--v-theme-*</code> 令牌）</div>
                     <div>· 数据与同步：<code>src/lib/store.ts</code>、<code>src/lib/kv.ts</code></div>
                     <div>· 服务端：<code>server/kv-core.ts</code> 与 <code>functions</code> / <code>worker</code> / <code>api</code> 适配器</div>
+                    <div>· 管理后台：<code>src/pages/Admin.tsx</code>、<code>server/admin-core.ts</code>（环境变量 <code>ADMIN_PASSWORD</code>）</div>
                     <div>· UAF：<code>src/lib/uafExport.ts</code>；噪音：<code>src/lib/noise.ts</code></div>
                   </div>
                   <p className="mt-3 mb-2">
@@ -320,6 +328,33 @@ export function SettingsPage({ onBack, openStudents, openSubjects, openExams }: 
 
               <SettingsCard title="数据源设置" icon="database">
                 {renderList(GROUP_SETTINGS.server ?? [])}
+              </SettingsCard>
+
+              <SettingsCard
+                title="管理后台"
+                icon="shield-key"
+                subtitle="查看全站数据、操作日志并导出备份，需要服务端配置 ADMIN_PASSWORD"
+              >
+                <div className="d-flex flex-wrap" style={{ gap: 8 }}>
+                  <button
+                    type="button"
+                    className="v-btn v-btn--size-small v-btn--variant-tonal"
+                    data-color="primary"
+                    onClick={openAdmin}
+                  >
+                    <MdiIcon name="shield-key" size={18} />
+                    打开管理后台
+                  </button>
+                  <a
+                    className="v-btn v-btn--size-small v-btn--variant-outlined"
+                    href={`${window.location.origin}/admin`}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    <MdiIcon name="open-in-new" size={18} />
+                    新标签页打开
+                  </a>
+                </div>
               </SettingsCard>
             </>
           )}

@@ -1,15 +1,18 @@
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import type { Connect, Plugin } from 'vite'
+import { handleAdmin } from './admin-core'
 import { handleKV, healthResponse, type Backend } from './kv-core'
 
 /**
- * 本地开发用的 KV 接口：把 /api/kv 落到 .data/kv.json。
+ * 本地开发用的 KV 接口：把 /api/kv 与 /api/admin 落到 .data/kv.json。
  *
- * 这样 `npm run dev` 就能完整走通「云端模式」，不必先部署后端。
+ * 这样 `npm run dev` 就能完整走通「云端模式」和「管理后台」，不必先部署后端。
+ * 环境变量优先取 Vite 加载的 .env，其次取进程环境。
  */
-export function devKV(): Plugin {
+export function devKV(env: Record<string, string | undefined> = {}): Plugin {
   const file = path.resolve(process.cwd(), '.data/kv.json')
+  const readEnv = (name: string) => env[name] || process.env[name]
   let cache: Record<string, string> | null = null
   let writing: Promise<void> = Promise.resolve()
 
@@ -70,7 +73,7 @@ export function devKV(): Plugin {
           return
         }
 
-        if (url.pathname !== '/api/kv') {
+        if (url.pathname !== '/api/kv' && url.pathname !== '/api/admin') {
           res.statusCode = 404
           res.end(JSON.stringify({ error: 'not_found' }))
           return
@@ -85,6 +88,9 @@ export function devKV(): Plugin {
           if (value === undefined) continue
           headers.set(name, Array.isArray(value) ? value.join(',') : value)
         }
+        if (!headers.has('x-forwarded-for') && req.socket.remoteAddress) {
+          headers.set('x-forwarded-for', req.socket.remoteAddress.replace(/^::ffff:/, ''))
+        }
 
         const method = (req.method ?? 'GET').toUpperCase()
         const request = new Request(url, {
@@ -93,9 +99,17 @@ export function devKV(): Plugin {
           body: method === 'GET' || method === 'HEAD' || raw.length === 0 ? undefined : raw,
         })
 
-        const response = await handleKV(request, backend, {
-          siteToken: process.env.SITE_TOKEN,
-        })
+        const response =
+          url.pathname === '/api/admin'
+            ? await handleAdmin(request, backend, {
+                password: readEnv('ADMIN_PASSWORD'),
+                secret: readEnv('ADMIN_SECRET'),
+                corsOrigin: readEnv('CORS_ORIGIN'),
+              })
+            : await handleKV(request, backend, {
+                siteToken: readEnv('SITE_TOKEN'),
+                corsOrigin: readEnv('CORS_ORIGIN'),
+              })
 
         res.statusCode = response.status
         response.headers.forEach((value, name) => res.setHeader(name, value))

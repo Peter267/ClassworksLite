@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { AppBar } from './components/AppBar'
 import { Toaster } from './components/ui/Toaster'
 import { MessageDrawer } from './components/MessageDrawer'
 import { StudentsDialog, SubjectsDialog } from './components/PeopleDialogs'
+import { AdminPage } from './pages/Admin'
 import { ExamBoard } from './pages/ExamBoard'
 import { Home } from './pages/Home'
 import { ListPage } from './pages/ListPage'
@@ -10,11 +11,13 @@ import { SettingsPage } from './pages/Settings'
 import { useSetting } from './lib/hooks'
 import { store } from './lib/store'
 
-type Route = '/' | '/settings' | '/list' | '/exams'
+type Route = '/' | '/settings' | '/list' | '/exams' | '/admin'
 
 function normalizePath(path: string): Route {
   const clean = path.replace(/\/+$/, '') || '/'
-  if (clean === '/settings' || clean === '/list' || clean === '/exams') return clean
+  if (clean === '/settings' || clean === '/list' || clean === '/exams' || clean === '/admin') {
+    return clean
+  }
   return '/'
 }
 
@@ -80,13 +83,22 @@ export default function App() {
 
   const [studentsOpen, setStudentsOpen] = useState(false)
   const [subjectsOpen, setSubjectsOpen] = useState(false)
-  const [ready, setReady] = useState(false)
+  const [ready, setReady] = useState(() => path === '/admin')
   const [pendingEdit, setPendingEdit] = useState<string | null>(null)
 
+  const storeStarted = useRef(false)
   useEffect(() => {
+    if (path === '/admin') {
+      setReady(true)
+      return
+    }
+    if (storeStarted.current) return
+    storeStarted.current = true
+    setReady(false)
     void store.init().finally(() => setReady(true))
-    return () => store.destroy()
-  }, [])
+  }, [path])
+
+  useEffect(() => () => store.destroy(), [])
 
   const openSettings = useCallback(() => navigate('/settings'), [navigate])
 
@@ -136,8 +148,11 @@ export default function App() {
           openStudents={() => setStudentsOpen(true)}
           openSubjects={() => setSubjectsOpen(true)}
           openExams={() => navigate('/exams')}
+          openAdmin={() => navigate('/admin')}
         />
       )}
+
+      {path === '/admin' && <AdminPage onBack={() => navigate('/')} />}
 
       {path === '/list' && (
         <ListPage

@@ -1,0 +1,634 @@
+/**
+ * 管理后台接口：与 /api/kv 共用同一个 Backend，三种运行时复用。
+ *
+ * 鉴权流程：
+ *   POST { action: "login", password } -> HMAC-SHA256 签名令牌（有效期 12 小时）
+ *   其余请求携带 Authorization: Bearer <token>
+ *
+ * 管理密码来自环境变量 ADMIN_PASSWORD；未配置时接口返回 503，后台保持禁用。
+ */
+import {
+  AUDIT_LIMIT,
+  appendAudit,
+  clearAudit,
+  clientIp,
+  clientUserAgent,
+  readAudit,
+} from './audit'
+import type { Backend, StoredRecord } from './kv-core'
+
+const TOKEN_TTL_MS = 12 * 60 * 60 * 1000
+const MAX_BODY_BYTES = 1_500_000
+const MAX_LOGIN_BODY_BYTES = 16 * 1024
+const MAX_VALUE_BYTES = 1_000_000
+const MAX_KEYS = 1000
+const MAX_BACKUP_BYTES = 8 * 1024 * 1024
+const LOGIN_FAIL_LIMIT = 5
+const LOGIN_LOCK_MS = 10 * 60 * 1000
+const GUARD_KEY = '__admin-guard'
+const RESERVED_PREFIX = '__'
+
+const encoder = new TextEncoder()
+
+export interface AdminOptions {
+  password?: string
+  secret?: string
+  corsOrigin?: string
+}
+
+interface KeyRecord {
+  key: string
+  value: unknown
+  updatedAt: number
+  size: number
+  legacy: boolean
+}
+
+interface GuardEntry {
+  n: number
+  first: number
+  until: number
+}
+
+type GuardMap = Record<string, GuardEntry>
+
+/* ------------------------------------------------------------------ */
+/* 响应与编码                                                          */
+/* ------------------------------------------------------------------ */
+
+function corsHeaders(origin?: string): Record<string, string> {
+  if (!origin) return {}
+  return {
+    'Access-Control-Allow-Origin': origin,
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Admin-Token',
+    'Access-Control-Max-Age': '86400',
+    Vary: 'Origin',
+  }
+}
+
+function json(data: unknown, status = 200, origin?: string) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Cache-Control': 'no-store',
+      ...corsHeaders(origin),
+    },
+  })
+}
+
+function base64url(bytes: Uint8Array): string {
+  let binary = ''
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+
+function byteLength(text: string): number {
+  return encoder.encode(text).byteLength
+}
+
+/* ------------------------------------------------------------------ */
+/* 密码与令牌                                                          */
+/* ------------------------------------------------------------------ */
+
+const hmacKeys = new Map<string, Promise<CryptoKey>>()
+
+function hmacKey(secret: string): Promise<CryptoKey> {
+  const cached = hmacKeys.get(secret)
+  if (cached) return cached
+  const key = crypto.subtle.importKey(
+    'raw',
+    encoder.encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  )
+  hmacKeys.set(secret, key)
+  if (hmacKeys.size > 8) {
+    const oldest = hmacKeys.keys().next().value
+    if (oldest) hmacKeys.delete(oldest)
+  }
+  return key
+}
+
+async function constantTimeEqual(a: string, b: string): Promise<boolean> {
+  const [left, right] = await Promise.all([
+    crypto.subtle.digest('SHA-256', encoder.encode(a)),
+    crypto.subtle.digest('SHA-256', encoder.encode(b)),
+  ])
+  const x = new Uint8Array(left)
+  const y = new Uint8Array(right)
+  let diff = 0
+  for (let i = 0; i < x.length; i += 1) diff |= x[i] ^ y[i]
+  return diff === 0
+}
+
+function tokenSecret(options: AdminOptions): string {
+  const suffix = options.secret && options.secret.length > 0 ? options.secret : options.password
+  return `classworks-lite-admin:${suffix ?? ''}`
+}
+
+async function tokenSignature(secret: string, payload: string): Promise<string> {
+  const signature = await crypto.subtle.sign(
+    'HMAC',
+    await hmacKey(secret),
+    encoder.encode(payload),
+  )
+  return base64url(new Uint8Array(signature))
+}
+
+async function createToken(secret: string): Promise<{ token: string; expiresAt: number }> {
+  const expiresAt = Date.now() + TOKEN_TTL_MS
+  const nonceBytes = new Uint8Array(8)
+  crypto.getRandomValues(nonceBytes)
+  const payload = `v1.${expiresAt}.${base64url(nonceBytes)}`
+  return { token: `${payload}.${await tokenSignature(secret, payload)}`, expiresAt }
+}
+
+async function verifyToken(token: string, secret: string): Promise<number | null> {
+  const parts = token.split('.')
+  if (parts.length !== 4 || parts[0] !== 'v1') return null
+  const expiresAt = Number(parts[1])
+  if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) return null
+  const payload = `${parts[0]}.${parts[1]}.${parts[2]}`
+  const expected = await tokenSignature(secret, payload)
+  if (!(await constantTimeEqual(expected, parts[3]))) return null
+  return expiresAt
+}
+
+function readToken(request: Request): string | null {
+  const auth = request.headers.get('authorization')
+  if (auth?.startsWith('Bearer ')) return auth.slice(7).trim()
+  const header = request.headers.get('x-admin-token')
+  return header ? header.trim() : null
+}
+
+/* ------------------------------------------------------------------ */
+/* 登录限流                                                            */
+/* ------------------------------------------------------------------ */
+
+async function ipKey(ip: string): Promise<string> {
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', encoder.encode(ip)))
+  return Array.from(digest.slice(0, 8), (b) => b.toString(16).padStart(2, '0')).join('')
+}
+
+async function readGuard(backend: Backend): Promise<GuardMap> {
+  try {
+    const raw = await backend.read(GUARD_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw) as unknown
+    return parsed && typeof parsed === 'object' ? (parsed as GuardMap) : {}
+  } catch {
+    return {}
+  }
+}
+
+async function writeGuard(backend: Backend, guard: GuardMap): Promise<void> {
+  try {
+    const entries = Object.entries(guard)
+      .filter(([, entry]) => entry && typeof entry.until === 'number')
+      .sort((a, b) => b[1].first - a[1].first)
+      .slice(0, 200)
+    await backend.write(GUARD_KEY, JSON.stringify(Object.fromEntries(entries)))
+  } catch (err) {
+    console.warn('[admin] 登录限流状态写入失败', err)
+  }
+}
+
+async function handleLogin(
+  request: Request,
+  backend: Backend,
+  body: Record<string, unknown>,
+  options: AdminOptions,
+): Promise<Response> {
+  const ip = clientIp(request)
+  const ua = clientUserAgent(request)
+  const key = await ipKey(ip)
+  const now = Date.now()
+  const guard = await readGuard(backend)
+  const current = guard[key]
+
+  if (current && current.until > now) {
+    const minutes = Math.ceil((current.until - now) / 60_000)
+    return json(
+      { error: 'too_many_attempts', message: `尝试次数过多，请 ${minutes} 分钟后再试` },
+      429,
+      options.corsOrigin,
+    )
+  }
+
+  const password = typeof body.password === 'string' ? body.password : ''
+  const expected = options.password ?? ''
+  const ok = password.length > 0 && (await constantTimeEqual(password, expected))
+
+  if (!ok) {
+    const next: GuardEntry =
+      current && now - current.first < LOGIN_LOCK_MS
+        ? current
+        : { n: 0, first: now, until: 0 }
+    next.n += 1
+    if (next.n >= LOGIN_FAIL_LIMIT) next.until = now + LOGIN_LOCK_MS
+    guard[key] = next
+    await writeGuard(backend, guard)
+    await appendAudit(backend, {
+      actor: 'admin',
+      action: 'login_failed',
+      ip,
+      ua,
+      note: next.until > now ? '连续失败，已临时锁定' : '密码错误',
+    })
+    return json({ error: 'invalid_password', message: '密码错误' }, 401, options.corsOrigin)
+  }
+
+  if (current) {
+    delete guard[key]
+    await writeGuard(backend, guard)
+  }
+
+  const { token, expiresAt } = await createToken(tokenSecret(options))
+  await appendAudit(backend, { actor: 'admin', action: 'login', ip, ua })
+  return json({ token, expiresAt }, 200, options.corsOrigin)
+}
+
+/* ------------------------------------------------------------------ */
+/* 数据读取与归类                                                      */
+/* ------------------------------------------------------------------ */
+
+function isDataKey(key: unknown): key is string {
+  return (
+    typeof key === 'string' &&
+    key.length > 0 &&
+    key.length <= 200 &&
+    !key.startsWith(RESERVED_PREFIX) &&
+    !/[\u0000-\u001f\u007f]/.test(key)
+  )
+}
+
+function parseRecord(raw: string): { value: unknown; updatedAt: number; legacy: boolean } {
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    if (parsed && typeof parsed === 'object' && 'v' in parsed) {
+      const record = parsed as Partial<StoredRecord>
+      return {
+        value: record.v,
+        updatedAt: typeof record.t === 'number' ? record.t : 0,
+        legacy: false,
+      }
+    }
+    return { value: parsed, updatedAt: 0, legacy: true }
+  } catch {
+    return { value: raw, updatedAt: 0, legacy: true }
+  }
+}
+
+function groupOf(key: string): { id: string; label: string } {
+  if (key.startsWith('classworks-data-')) return { id: 'boards', label: '作业数据' }
+  if (key === 'classworks-list-main') return { id: 'roster', label: '花名册' }
+  if (key === 'classworks-config-subject') return { id: 'subjects', label: '科目' }
+  if (key === 'classworks-exams') return { id: 'exams', label: '考试' }
+  if (key === 'classworks-config-homework-template') return { id: 'template', label: '作业模板' }
+  if (key === 'noise-session-config') return { id: 'noise', label: '噪音时段' }
+  return { id: 'other', label: '其他' }
+}
+
+async function collectRecords(
+  backend: Backend,
+): Promise<{ records: KeyRecord[]; truncated: boolean }> {
+  const names = (await backend.scan(''))
+    .filter((name) => !name.startsWith(RESERVED_PREFIX))
+    .sort()
+  const truncated = names.length > MAX_KEYS
+  const selected = names.slice(0, MAX_KEYS)
+  const records: KeyRecord[] = []
+
+  for (let index = 0; index < selected.length; index += 25) {
+    const batch = selected.slice(index, index + 25)
+    const items = await Promise.all(
+      batch.map(async (key) => {
+        const raw = await backend.read(key)
+        if (raw === null) return null
+        const parsed = parseRecord(raw)
+        return { key, ...parsed, size: byteLength(raw) }
+      }),
+    )
+    for (const item of items) if (item) records.push(item)
+  }
+
+  return { records, truncated }
+}
+
+/* ------------------------------------------------------------------ */
+/* 各管理动作                                                          */
+/* ------------------------------------------------------------------ */
+
+async function handleStats(backend: Backend, origin?: string): Promise<Response> {
+  const { records, truncated } = await collectRecords(backend)
+  const groups = new Map<string, { id: string; label: string; keys: number; bytes: number }>()
+  let totalBytes = 0
+  let lastUpdated = 0
+
+  for (const record of records) {
+    const group = groupOf(record.key)
+    const entry = groups.get(group.id) ?? { ...group, keys: 0, bytes: 0 }
+    entry.keys += 1
+    entry.bytes += record.size
+    groups.set(group.id, entry)
+    totalBytes += record.size
+    if (record.updatedAt > lastUpdated) lastUpdated = record.updatedAt
+  }
+
+  const since = Date.now() - 86_400_000
+  return json(
+    {
+      totalKeys: records.length,
+      totalBytes,
+      updatedLast24h: records.filter((record) => record.updatedAt >= since).length,
+      lastUpdated,
+      groups: [...groups.values()].sort((a, b) => b.keys - a.keys),
+      truncated,
+      logLimit: AUDIT_LIMIT,
+    },
+    200,
+    origin,
+  )
+}
+
+async function handleKeys(backend: Backend, origin?: string): Promise<Response> {
+  const { records, truncated } = await collectRecords(backend)
+  return json(
+    {
+      keys: records.map((record) => ({
+        key: record.key,
+        updatedAt: record.updatedAt,
+        size: record.size,
+        group: groupOf(record.key).id,
+      })),
+      truncated,
+    },
+    200,
+    origin,
+  )
+}
+
+async function handleGet(
+  backend: Backend,
+  body: Record<string, unknown>,
+  origin?: string,
+): Promise<Response> {
+  if (!isDataKey(body.key)) {
+    return json({ error: 'bad_request', message: '缺少或非法的 key' }, 400, origin)
+  }
+  const raw = await backend.read(body.key)
+  if (raw === null) {
+    return json({ error: 'not_found', message: '数据键不存在' }, 404, origin)
+  }
+  const parsed = parseRecord(raw)
+  return json(
+    {
+      key: body.key,
+      value: parsed.value ?? null,
+      updatedAt: parsed.updatedAt,
+      size: byteLength(raw),
+      legacy: parsed.legacy,
+      group: groupOf(body.key).id,
+    },
+    200,
+    origin,
+  )
+}
+
+async function handlePut(
+  request: Request,
+  backend: Backend,
+  body: Record<string, unknown>,
+  origin?: string,
+): Promise<Response> {
+  if (!isDataKey(body.key)) {
+    return json({ error: 'bad_request', message: '缺少或非法的 key' }, 400, origin)
+  }
+  if (!('value' in body)) {
+    return json({ error: 'bad_request', message: '缺少 value' }, 400, origin)
+  }
+
+  const key = body.key
+  const raw = await backend.read(key)
+  const base = typeof body.baseUpdatedAt === 'number' ? body.baseUpdatedAt : null
+
+  if (base === null) {
+    if (raw !== null) {
+      return json(
+        { error: 'conflict', message: '该数据键已存在，请刷新列表后重试' },
+        409,
+        origin,
+      )
+    }
+  } else if (raw !== null) {
+    const current = parseRecord(raw)
+    if (current.updatedAt !== base) {
+      return json(
+        {
+          error: 'conflict',
+          message: '数据已被其他操作修改，请刷新后重试',
+          updatedAt: current.updatedAt,
+        },
+        409,
+        origin,
+      )
+    }
+  }
+
+  const record: StoredRecord = { v: body.value, t: Date.now() }
+  const serialized = JSON.stringify(record)
+  const size = byteLength(serialized)
+  if (size > MAX_VALUE_BYTES) {
+    return json({ error: 'payload_too_large', message: '数据超过 1MB' }, 413, origin)
+  }
+
+  await backend.write(key, serialized)
+  await appendAudit(backend, {
+    actor: 'admin',
+    action: 'write',
+    key,
+    size,
+    ip: clientIp(request),
+    ua: clientUserAgent(request),
+  })
+  return json({ key, updatedAt: record.t, size }, 200, origin)
+}
+
+async function handleDelete(
+  request: Request,
+  backend: Backend,
+  body: Record<string, unknown>,
+  origin?: string,
+): Promise<Response> {
+  if (!isDataKey(body.key)) {
+    return json({ error: 'bad_request', message: '缺少或非法的 key' }, 400, origin)
+  }
+
+  const key = body.key
+  const raw = await backend.read(key)
+  if (raw === null) {
+    return json({ ok: true, key, missing: true }, 200, origin)
+  }
+
+  if (typeof body.baseUpdatedAt === 'number') {
+    const current = parseRecord(raw)
+    if (current.updatedAt !== body.baseUpdatedAt) {
+      return json(
+        { error: 'conflict', message: '数据已被其他操作修改，请刷新后重试' },
+        409,
+        origin,
+      )
+    }
+  }
+
+  await backend.remove(key)
+  await appendAudit(backend, {
+    actor: 'admin',
+    action: 'delete',
+    key,
+    ip: clientIp(request),
+    ua: clientUserAgent(request),
+  })
+  return json({ ok: true, key }, 200, origin)
+}
+
+async function handleBackup(backend: Backend, origin?: string): Promise<Response> {
+  const { records, truncated } = await collectRecords(backend)
+  if (truncated) {
+    return json(
+      { error: 'too_many_keys', message: `数据键超过 ${MAX_KEYS} 条，请分批导出` },
+      413,
+      origin,
+    )
+  }
+
+  let bytes = 0
+  for (const record of records) bytes += record.size
+  if (bytes > MAX_BACKUP_BYTES) {
+    return json(
+      { error: 'backup_too_large', message: '数据总大小超过 8MB，请分批导出' },
+      413,
+      origin,
+    )
+  }
+
+  const data: Record<string, { value: unknown; updatedAt: number }> = {}
+  for (const record of records) {
+    data[record.key] = { value: record.value, updatedAt: record.updatedAt }
+  }
+  return json({ exportedAt: Date.now(), count: records.length, bytes, data }, 200, origin)
+}
+
+/* ------------------------------------------------------------------ */
+/* 入口                                                                */
+/* ------------------------------------------------------------------ */
+
+export async function handleAdmin(
+  request: Request,
+  backend: Backend,
+  options: AdminOptions = {},
+): Promise<Response> {
+  const origin = options.corsOrigin
+
+  if (request.method === 'OPTIONS') {
+    return new Response(null, { status: 204, headers: corsHeaders(origin) })
+  }
+
+  if (request.method !== 'POST') {
+    return json({ error: 'method_not_allowed' }, 405, origin)
+  }
+
+  if (!options.password) {
+    return json(
+      {
+        error: 'admin_not_configured',
+        message: '服务端未配置 ADMIN_PASSWORD，管理后台不可用',
+      },
+      503,
+      origin,
+    )
+  }
+
+  const text = await request.text()
+  if (text.length > MAX_BODY_BYTES) {
+    return json({ error: 'payload_too_large', message: '请求体过大' }, 413, origin)
+  }
+
+  let body: Record<string, unknown>
+  try {
+    const parsed = JSON.parse(text) as unknown
+    if (!parsed || typeof parsed !== 'object') throw new Error('not an object')
+    body = parsed as Record<string, unknown>
+  } catch {
+    return json({ error: 'bad_request', message: '请求体不是合法 JSON' }, 400, origin)
+  }
+
+  const action = typeof body.action === 'string' ? body.action : ''
+  if (action === 'login') {
+    if (text.length > MAX_LOGIN_BODY_BYTES) {
+      return json({ error: 'payload_too_large', message: '请求体过大' }, 413, origin)
+    }
+    return handleLogin(request, backend, body, options)
+  }
+
+  if (!action) {
+    return json({ error: 'bad_request', message: '缺少 action' }, 400, origin)
+  }
+
+  const token = readToken(request)
+  const expiresAt = token ? await verifyToken(token, tokenSecret(options)) : null
+  if (!expiresAt) {
+    return json(
+      { error: 'unauthorized', message: '管理会话已过期，请重新登录' },
+      401,
+      origin,
+    )
+  }
+
+  try {
+    switch (action) {
+      case 'session':
+        return json({ authenticated: true, expiresAt, logLimit: AUDIT_LIMIT }, 200, origin)
+      case 'stats':
+        return await handleStats(backend, origin)
+      case 'keys':
+        return await handleKeys(backend, origin)
+      case 'get':
+        return await handleGet(backend, body, origin)
+      case 'put':
+        return await handlePut(request, backend, body, origin)
+      case 'delete':
+        return await handleDelete(request, backend, body, origin)
+      case 'logs': {
+        const logs = await readAudit(backend)
+        return json({ logs, limit: AUDIT_LIMIT }, 200, origin)
+      }
+      case 'backup':
+        return await handleBackup(backend, origin)
+      case 'clear_logs':
+        await clearAudit(backend)
+        await appendAudit(backend, {
+          actor: 'admin',
+          action: 'clear_logs',
+          ip: clientIp(request),
+          ua: clientUserAgent(request),
+        })
+        return json({ ok: true }, 200, origin)
+      default:
+        return json({ error: 'unknown_action', message: '未知操作' }, 400, origin)
+    }
+  } catch (err) {
+    console.error('[admin] 处理失败', err)
+    return json(
+      {
+        error: 'internal_error',
+        message: err instanceof Error ? err.message : '未知错误',
+      },
+      500,
+      origin,
+    )
+  }
+}

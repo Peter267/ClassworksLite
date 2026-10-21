@@ -16,4 +16,9 @@ id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
 [vars]
 # CORS_ORIGIN = "https://your-domain.com"
 
-# 敏感值请用 `npx wrangler secret put SITE_TOKEN` 写入，不要提交到仓库
+# 敏感值请用 `npx wrangler secret put` 写入，不要提交到仓库：
+#   npx wrangler secret put SITE_TOKEN
+#   npx wrangler secret put ADMIN_PASSWORD      # 管理后台（/admin）必需
+#   npx wrangler secret put ADMIN_SECRET        # 可选，用于令牌签名
+# 本地 `wrangler dev` 时也可写在 .dev.vars：
+#   ADMIN_PASSWORD=change-me

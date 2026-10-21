@@ -7,43 +7,13 @@
  *  3. （可选）添加环境变量 SITE_TOKEN 启用鉴权
  *  4. 构建命令 npm run build，输出目录 dist
  */
-import { handleKV, type Backend } from '../../server/kv-core'
-
-interface KVListResult {
-  keys: { name: string }[]
-  list_complete: boolean
-  cursor?: string
-}
-
-interface KVNamespaceLike {
-  get(key: string): Promise<string | null>
-  put(key: string, value: string): Promise<void>
-  delete(key: string): Promise<void>
-  list(options: { prefix?: string; cursor?: string }): Promise<KVListResult>
-}
+import { createKVBackend, type KVNamespaceLike } from '../../server/cloudflare'
+import { handleKV } from '../../server/kv-core'
 
 interface Env {
   KV: KVNamespaceLike
   SITE_TOKEN?: string
   CORS_ORIGIN?: string
-}
-
-function createBackend(kv: KVNamespaceLike): Backend {
-  return {
-    read: (key) => kv.get(key),
-    write: (key, raw) => kv.put(key, raw),
-    remove: (key) => kv.delete(key),
-    async scan(prefix) {
-      const names: string[] = []
-      let cursor: string | undefined
-      do {
-        const page = await kv.list({ prefix, cursor })
-        names.push(...page.keys.map((item) => item.name))
-        cursor = page.list_complete ? undefined : page.cursor
-      } while (cursor)
-      return names
-    },
-  }
 }
 
 export async function onRequest(context: {
@@ -60,5 +30,5 @@ export async function onRequest(context: {
     )
   }
 
-  return handleKV(request, createBackend(env.KV), options)
+  return handleKV(request, createKVBackend(env.KV), options)
 }

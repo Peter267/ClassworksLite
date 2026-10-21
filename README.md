@@ -11,7 +11,7 @@ ClassworksLite 保留了 [Classworks](https://github.com/Moonrend/Classworks) �
 - 一个函数即可联网：`GET/PUT/DELETE /api/kv`，约 200 行，无框架依赖
 - 离线可用：PWA 缓存 + 离线写入队列，断网照常记录，恢复后自动补传
 - 单文件数据模型：每天一条 KV 记录，兼容上游键名
-- 新特性：**UAF 作业导入导出**、**环境噪音监测**（晚自习时段自动记录与统计报告）
+- 新特性：**UAF 作业导入导出**、**环境噪音监测**（晚自习时段自动记录与统计报告）、**密码保护的管理后台**（全站数据 / 日志 / 备份）
 
 ![作业板](docs/screenshot.png)
 
@@ -42,6 +42,7 @@ ClassworksLite 保留了 [Classworks](https://github.com/Moonrend/Classworks) �
 | 消息记录 | 顶栏铃铛 + 右侧抽屉，保留最近 100 条操作消息与类型图标 |
 | UAF 导入导出 | 选择日期 → 勾选作业 → 生成 PDF 预览 / 导出；导入 PDF 后按日期分组、冲突项可选保留或覆盖 |
 | 环境噪音监测 | 实时分贝、等级、评分与波形；晚自习时段自动记录并生成统计报告；支持自动 / 手动校准 |
+| 管理后台 | 密码登录后查看全站数据概况、搜索 / 编辑 / 删除 / 新建任意数据键、导出全站备份，并查看写入与登录审计日志 |
 | 主题与排版 | 深色 / 浅色、正文字号 16–100px、自定义背景（模糊 + 遮罩） |
 | 防烧屏提示 | 可选展示 |
 | PWA | manifest + Service Worker，可安装、离线打开 |
@@ -90,6 +91,45 @@ HarmonyOS Sans SC 字体，导出结果与上游一致。
 - 校准：在已知环境分贝下做 3 秒自动校准，或手动填写基准分贝 / 基准 RMS / 最大分贝。
 - 相关设置：`noiseMonitor.enabled`、`noiseMonitor.autoStart`、`noiseMonitor.permissionDismissed`。
 
+## 管理后台
+
+入口：页面底部「设置 → 服务器 → 管理后台」，或直接访问 `/admin`。
+
+管理后台默认禁用，必须在部署平台配置 `ADMIN_PASSWORD`；未配置时 `/api/admin`
+返回 503 `admin_not_configured`。可选配置 `ADMIN_SECRET` 作为令牌签名密钥
+（修改后所有已登录会话立即失效）。
+
+| 环境变量 | 必填 | 说明 |
+| --- | --- | --- |
+| `ADMIN_PASSWORD` | 是 | 管理后台登录密码，建议使用 16 位以上随机字符串 |
+| `ADMIN_SECRET` | 否 | 令牌 HMAC 签名密钥；留空时使用 `ADMIN_PASSWORD` |
+
+功能：
+
+- **概览**：数据键数量、占用空间、近 24 小时更新数、最近写入时间；按前缀归类
+  （作业数据 / 花名册 / 科目 / 考试 / 作业模板 / 噪音时段 / 其他）统计键数与大小。
+- **数据**：搜索、分组筛选、分页浏览全部数据键；查看与编辑任意 JSON 值、
+  新建数据键、删除数据键；保存时带乐观并发校验，数据被其他设备修改会提示冲突。
+- **日志**：记录管理员登录 / 登录失败 / 写入 / 删除 / 清空日志，以及站点通过
+  `/api/kv` 的写入、删除和令牌校验失败；支持按来源与关键字过滤。日志最多保留
+  最近 500 条。
+- **备份**：一键导出全部数据（`{ 键名: { value, updatedAt } }` 的 JSON 文件），
+  数据键超过 1000 条或总大小超过 8 MB 时拒绝导出。
+
+安全设计：
+
+- 登录成功后签发 HMAC-SHA256 令牌（格式 `v1.<expiresAt>.<nonce>.<signature>`），
+  有效期 12 小时；令牌保存在 `sessionStorage`，关闭标签页即退出，不写入 localStorage。
+- 密码比较与签名校验均为常量时间；同一 IP 连续 5 次密码错误锁定 10 分钟，
+  限流状态保存在保留键 `__admin-guard`。
+- 所有 `__` 前缀的键（日志、限流状态）对公开 `/api/kv` 完全不可见、不可读写；
+  后台数据列表也会过滤这些键。
+- 管理接口只记录写操作与登录事件，不记录读请求，避免放大 KV 读写次数。
+- 日志写入失败不会阻断数据写入（审计失败只打印警告）。
+
+> 管理后台复用 `/api/kv` 的同一份 KV 数据，部署时不需要额外数据库。
+> 管理密码只保存在服务端环境变量中，前端不会内置任何默认密码。
+
 ---
 
 ## 二次开发
@@ -102,6 +142,8 @@ HarmonyOS Sans SC 字体，导出结果与上游一致。
 | 设置项（键名 / 默认值 / 分组 / 标题） | `src/lib/settings.ts` |
 | 主题与组件样式 | `src/index.css`（`--v-theme-*` 令牌） |
 | 数据与同步 | `src/lib/store.ts`、`src/lib/kv.ts` |
+| 管理后台前端 | `src/pages/Admin.tsx`、`src/lib/admin.ts` |
+| 管理接口与服务端 | `server/admin-core.ts`、`server/audit.ts` + `functions` / `worker` / `api` 适配器 |
 | 服务端 | `server/kv-core.ts` + `functions` / `worker` / `api` 适配器 |
 | UAF 导入导出 | `src/lib/uafExport.ts` |
 | 环境噪音监测 | `src/lib/noise.ts` |
@@ -138,6 +180,10 @@ npm run dev          # http://localhost:3031
 落到 `.data/kv.json`。因此在设置里切到「云端同步」也能在本地完整跑通读写与离线队列，
 不需要提前部署后端。
 
+管理后台在本地同样可用：在仓库根目录的 `.env.local` 写入 `ADMIN_PASSWORD=你的密码`，
+或直接运行 `ADMIN_PASSWORD=你的密码 npm run dev`，然后访问
+`http://localhost:3031/admin`。
+
 其他命令：
 
 ```bash
@@ -171,6 +217,8 @@ npm run preview      # 预览构建结果（同样带本地 KV）
 4. （可选）环境变量：
    - `SITE_TOKEN`：启用访问令牌，前端需在「设置 → 服务器 → 网站令牌」填写同值
    - `CORS_ORIGIN`：限制允许来源，默认 `*`
+   - `ADMIN_PASSWORD`：启用管理后台（必需，否则 `/admin` 不可用）
+   - `ADMIN_SECRET`：管理令牌签名密钥（可选，推荐单独设置）
 
 部署后访问 `/api/health` 应返回 `{"ok":true,...}`。
 
@@ -183,7 +231,15 @@ npx wrangler deploy
 ```
 
 `wrangler.toml` 已配置 `[assets]`，Worker 只接管 `/api/*`，其余交给静态资源。
-敏感值用 `npx wrangler secret put SITE_TOKEN` 写入。
+敏感值用 `npx wrangler secret put` 写入：
+
+```bash
+npx wrangler secret put SITE_TOKEN
+npx wrangler secret put ADMIN_PASSWORD   # 管理后台必需
+npx wrangler secret put ADMIN_SECRET     # 可选
+```
+
+本地 `wrangler dev` 时把同样的值写进 `.dev.vars`（格式 `KEY=value`）。
 
 ### 方案三：Vercel（Upstash Redis）
 
@@ -192,6 +248,7 @@ npx wrangler deploy
    - `UPSTASH_REDIS_REST_URL`
    - `UPSTASH_REDIS_REST_TOKEN`
    - 可选 `SITE_TOKEN`、`CORS_ORIGIN`
+   - 管理后台：`ADMIN_PASSWORD`（必需）、`ADMIN_SECRET`（可选）
 3. 直接导入仓库，`vercel.json` 已配置构建与 SPA 重写
 
 ### 方案四：纯静态（本地模式）
@@ -233,6 +290,13 @@ noise-session-config          → { sessions: [{ name, start, duration, enabled 
 噪音评分与报告只存本机（`localStorage`：`classworks-noise-reports`、
 `classworks-noise-calibration`），不进入共享数据。
 
+内部保留键（`__` 前缀，公开 `/api/kv` 不可访问）：
+
+```
+__admin-logs                  → 最近 500 条审计日志（新→旧）
+__admin-guard                 → 管理登录失败限流状态（按 IP 哈希）
+```
+
 ## API 契约
 
 ```
@@ -241,11 +305,31 @@ GET    /api/kv?prefix=P    → 200 { keys: [{ key, updatedAt }] }
 PUT    /api/kv             → body { key, value } → 200 { key, updatedAt }
 DELETE /api/kv?key=K       → 200 { ok: true }
 GET    /api/health         → 200 { ok: true, service: "classworks-lite-kv", ts }
+POST   /api/admin          → body { action, ... } → 200 { ... } | 400 / 401 / 409 / 413 / 429 / 503
 ```
 
 - 鉴权：`Authorization: Bearer <SITE_TOKEN>` 或 `X-Site-Key: <SITE_TOKEN>`；未配置则跳过
+- 管理接口：除 `login` 外的动作都需要 `Authorization: Bearer <adminToken>`
+  （或 `X-Admin-Token`），令牌由 `login` 返回
 - 单条上限 1 MB，键长上限 200 字符
+- `__` 前缀为内部保留键（`__admin-logs`、`__admin-guard`），公开接口不可读写，
+  也不会出现在 `prefix` 查询与管理后台的数据列表中
 - 所有响应 `Cache-Control: no-store`
+
+管理接口动作：
+
+| action | 参数 | 说明 |
+| --- | --- | --- |
+| `login` | `password` | 校验密码，返回 `{ token, expiresAt }`（12 小时） |
+| `session` | — | 校验令牌，返回 `{ authenticated, expiresAt, logLimit }` |
+| `stats` | — | 数据键总数、总大小、近 24 小时更新数与分组统计 |
+| `keys` | — | 全部数据键的 `{ key, updatedAt, size, group }`（最多 1000 条） |
+| `get` | `key` | 读取单条数据，返回 `{ key, value, updatedAt, size, legacy, group }` |
+| `put` | `key`, `value`, `baseUpdatedAt?` | 写入；新建时 `baseUpdatedAt` 省略且键不能已存在，修改时用于并发校验 |
+| `delete` | `key`, `baseUpdatedAt?` | 删除；带 `baseUpdatedAt` 时校验是否被改动 |
+| `logs` | — | 最近 500 条审计日志 |
+| `backup` | — | 导出全部数据（超过 1000 条或 8 MB 时返回 413） |
+| `clear_logs` | — | 清空审计日志，并记录一条 `clear_logs` 事件 |
 
 ---
 
@@ -257,10 +341,11 @@ GET    /api/health         → 200 { ok: true, service: "classworks-lite-kv", ts
 │   │   ├── NoiseMonitorDetail.tsx   噪音详情（实时 / 报告 / 校准）
 │   │   ├── UafTransferDialog.tsx    UAF 导入导出对话框
 │   │   └── settings/               设置卡片、设置项、噪音设置
-│   ├── pages/               作业板 / 设置 / 列表 / 考试看板
+│   ├── pages/               作业板 / 设置 / 列表 / 考试看板 / 管理后台
 │   ├── lib/
 │   │   ├── store.ts         全局数据中心（作业、出勤、名单、同步）
 │   │   ├── kv.ts            本地 / 云端客户端，含离线队列
+│   │   ├── admin.ts         管理接口客户端（登录、数据、日志、备份）
 │   │   ├── noise.ts         噪音采集、评分、校准与报告存储
 │   │   ├── uafExport.ts     UAF 校验、预览、导入计划与落盘
 │   │   ├── settings.ts      设置项定义与校验
@@ -272,11 +357,16 @@ GET    /api/health         → 200 { ok: true, service: "classworks-lite-kv", ts
 │   └── manifest.webmanifest PWA 清单（名称为 ClassworksLite）
 ├── server/
 │   ├── kv-core.ts           与平台无关的 KV 处理器
+│   ├── admin-core.ts        管理接口（登录、数据管理、备份）
+│   ├── audit.ts             审计日志与客户端信息提取
+│   ├── cloudflare.ts        Cloudflare KV 适配（Worker / Pages 共用）
 │   ├── upstash.ts           Upstash Redis 适配
-│   └── dev-kv-plugin.ts     本地开发用 KV（.data/kv.json）
+│   └── dev-kv-plugin.ts     本地开发用 KV + 管理接口（.data/kv.json）
 ├── functions/api/kv.ts      Cloudflare Pages Function
+├── functions/api/admin.ts   Cloudflare Pages 管理 Function
 ├── worker/index.ts          Cloudflare Workers 入口
-└── api/kv.ts                Vercel Edge Function
+├── api/kv.ts                Vercel Edge Function
+└── api/admin.ts             Vercel Edge 管理 Function
 ```
 
 ---
