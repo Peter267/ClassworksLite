@@ -4,7 +4,7 @@
  * 与 /api/kv 共用 Upstash Redis，并额外读取：
  *   ADMIN_PASSWORD  管理后台密码（必填，未配置时后台禁用）
  *   ADMIN_SECRET    可选，令牌签名密钥
- *   CORS_ORIGIN     可选，前端与 API 不同源时填写前端来源
+ *   CORS_ORIGIN     可选，限制允许的跨域来源（站点自身固定同源调用）
  */
 import { handleAdmin } from '../server/admin-core'
 import { UpstashBackend } from '../server/upstash'

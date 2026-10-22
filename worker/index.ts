@@ -13,9 +13,8 @@ interface Env {
   KV: KVNamespaceLike
   ASSETS: { fetch(request: Request): Promise<Response> }
   SITE_PASSWORD?: string
-  EDIT_TOKEN?: string
+  EDIT_PASSWORD?: string
   AUTH_SECRET?: string
-  SITE_TOKEN?: string
   ADMIN_PASSWORD?: string
   ADMIN_SECRET?: string
   CORS_ORIGIN?: string
@@ -43,9 +42,8 @@ export default {
       const backend = createKVBackend(env.KV)
       if (url.pathname === '/api/auth') {
         return handleAccess(request, backend, {
-          sitePassword: env.SITE_PASSWORD,
-          editToken: env.EDIT_TOKEN,
-          siteToken: env.SITE_TOKEN,
+          viewPassword: env.SITE_PASSWORD,
+          editPassword: env.EDIT_PASSWORD,
           secret: env.AUTH_SECRET,
           corsOrigin: env.CORS_ORIGIN,
         })
@@ -58,16 +56,15 @@ export default {
         })
       }
       return handleKV(request, backend, {
-        siteToken: env.SITE_TOKEN,
-        sitePassword: env.SITE_PASSWORD,
+        viewPassword: env.SITE_PASSWORD,
+        editPassword: env.EDIT_PASSWORD,
         authSecret: env.AUTH_SECRET,
-        editToken: env.EDIT_TOKEN,
         corsOrigin: env.CORS_ORIGIN,
       })
     }
 
     if (url.pathname.startsWith('/api/')) {
-      return new Response(JSON.stringify({ error: 'not_found' }), {
+      return new Response(JSON.stringify({ error: 'route_not_found' }), {
         status: 404,
         headers: {
           'Content-Type': 'application/json; charset=utf-8',

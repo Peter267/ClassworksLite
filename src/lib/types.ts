@@ -56,13 +56,9 @@ export interface HomeworkTemplate {
   actions?: string[]
 }
 
-export type ProviderMode = 'local' | 'cloud'
-
 export interface KVEntry<T = unknown> {
   value: T
   updatedAt: number
-  /** 仅本地缓存使用：该条写入尚未同步到云端 */
-  pending?: boolean
-  /** 读取时命中本地缓存、未从网络取到最新值 */
+  /** 读取时命中本机缓存、未从网络取到最新值 */
   stale?: boolean
 }

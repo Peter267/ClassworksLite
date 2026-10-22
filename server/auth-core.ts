@@ -1,58 +1,34 @@
 /**
  * 站点访问控制接口：/api/auth
  *
- * 两级权限：
- *   访问密码 SITE_PASSWORD → 校验通过后签发 HMAC 令牌（默认 7 天），用于读取作业；
- *   编辑令牌 EDIT_TOKEN    → 写入 / 删除时通过 X-Edit-Token 校验，用于修改作业。
+ * 单一密码框、两套密码：
+ *   只读密码 SITE_PASSWORD → 登录后只能查看作业；
+ *   可写密码 EDIT_PASSWORD → 登录后可以查看并修改作业。
  *
- * 未配置 SITE_PASSWORD 时保持旧行为：可继续使用静态 SITE_TOKEN，或完全开放。
- * 未配置 EDIT_TOKEN 时不限制写入。
+ * 登录成功后签发带角色的 HMAC 令牌（默认 7 天），/api/kv 依据令牌角色决定是否允许写入。
+ * 两个密码都未配置时不启用访问门，视为完全开放。
  */
 import { appendAudit, clientIp, clientUserAgent } from './audit'
 import type { Backend } from './kv-core'
 import { createLoginGuard } from './login-guard'
-import { constantTimeEqual, createToken, verifyToken } from './token'
+import { constantTimeEqual, createToken, verifyToken, type TokenRole } from './token'
 
 const ACCESS_TTL_MS = 7 * 24 * 60 * 60 * 1000
 const MAX_BODY_BYTES = 16 * 1024
 const GUARD_KEY = '__access-guard'
-const STATUS_EDIT_LIMIT = 5
-const STATUS_EDIT_LOCK_MS = 10 * 60 * 1000
-const statusEditFailures = new Map<string, { n: number; first: number; until: number }>()
-
-function statusEditLocked(ip: string): boolean {
-  const entry = statusEditFailures.get(ip)
-  return Boolean(entry && entry.until > Date.now())
-}
-
-function recordStatusEditFailure(ip: string) {
-  const now = Date.now()
-  const current = statusEditFailures.get(ip)
-  const next =
-    current && now - current.first < STATUS_EDIT_LOCK_MS
-      ? current
-      : { n: 0, first: now, until: 0 }
-  next.n += 1
-  if (next.n >= STATUS_EDIT_LIMIT) next.until = now + STATUS_EDIT_LOCK_MS
-  statusEditFailures.set(ip, next)
-  if (statusEditFailures.size > 500) {
-    for (const [key, value] of statusEditFailures) {
-      if (value.until <= now) statusEditFailures.delete(key)
-    }
-  }
-}
 
 export interface AccessOptions {
-  /** 站点访问密码；为空表示不启用密码门 */
-  sitePassword?: string
-  /** 编辑令牌；为空表示任何能查看的人都可写入 */
-  editToken?: string
-  /** 旧版静态访问令牌，仍可作为访问凭证使用 */
-  siteToken?: string
-  /** 访问令牌签名密钥，留空时使用 SITE_PASSWORD */
+  /** 只读密码；为空表示没有只读入口 */
+  viewPassword?: string
+  /** 可写密码；为空表示不能通过登录获得写权限 */
+  editPassword?: string
+  /** 访问令牌签名密钥，留空时由两个密码派生（改密码即全体失效） */
   secret?: string
   corsOrigin?: string
 }
+
+/** 登录后获得的站点角色，admin 令牌不参与站点访问 */
+export type AccessRole = Extract<TokenRole, 'view' | 'edit'>
 
 const encoder = new TextEncoder()
 
@@ -65,7 +41,7 @@ function corsHeaders(origin?: string): Record<string, string> {
   return {
     'Access-Control-Allow-Origin': origin,
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Edit-Token, X-Site-Key',
+    'Access-Control-Allow-Headers': 'Authorization, Content-Type',
     'Access-Control-Max-Age': '86400',
     Vary: 'Origin',
   }
@@ -87,8 +63,17 @@ function json(data: unknown, status = 200, origin?: string) {
 /* ------------------------------------------------------------------ */
 
 function accessSecret(options: AccessOptions): string {
-  const suffix = options.secret && options.secret.length > 0 ? options.secret : options.sitePassword
-  return `classworks-lite-access:${suffix ?? ''}`
+  // 两个密码与 AUTH_SECRET 一起参与派生：任一项变更都会让已签发的令牌立即失效，
+  // 用长度前缀避免密码里出现分隔符时的拼接歧义
+  const fingerprint = `${(options.viewPassword ?? '').length}:${options.viewPassword ?? ''}|${(options.editPassword ?? '').length}:${options.editPassword ?? ''}`
+  const suffix = options.secret && options.secret.length > 0
+    ? `${options.secret.length}:${options.secret}|${fingerprint}`
+    : fingerprint
+  return `classworks-lite-access:${suffix}`
+}
+
+function passwordRequired(options: AccessOptions): boolean {
+  return Boolean(options.viewPassword || options.editPassword)
 }
 
 function readBearer(request: Request): string | null {
@@ -97,35 +82,18 @@ function readBearer(request: Request): string | null {
   return null
 }
 
-function readSiteToken(request: Request): string | null {
-  return readBearer(request) ?? request.headers.get('x-site-key')?.trim() ?? null
-}
-
-export async function isViewAuthorized(
+/** 返回请求令牌对应的角色；未登录或令牌无效返回 null */
+export async function authorizeAccess(
   request: Request,
   options: AccessOptions,
-): Promise<boolean> {
-  if (!options.sitePassword) {
-    if (!options.siteToken) return true
-    const token = readSiteToken(request)
-    return token !== null && (await constantTimeEqual(token, options.siteToken))
-  }
-
+): Promise<AccessRole | null> {
+  if (!passwordRequired(options)) return 'edit'
   const token = readBearer(request)
-  if (!token) return false
-  // 迁移期兼容：旧版静态令牌仍可访问
-  if (options.siteToken && (await constantTimeEqual(token, options.siteToken))) return true
-  return (await verifyToken(token, accessSecret(options))) !== null
-}
-
-export async function isEditAuthorized(
-  request: Request,
-  options: AccessOptions,
-): Promise<boolean> {
-  if (!options.editToken) return true
-  const provided = request.headers.get('x-edit-token')?.trim() ?? ''
-  if (!provided) return false
-  return constantTimeEqual(provided, options.editToken)
+  if (!token) return null
+  const payload = await verifyToken(token, accessSecret(options))
+  if (!payload) return null
+  if (payload.role !== 'view' && payload.role !== 'edit') return null
+  return payload.role
 }
 
 /* ------------------------------------------------------------------ */
@@ -136,30 +104,12 @@ async function handleStatus(
   request: Request,
   options: AccessOptions,
 ): Promise<Response> {
-  const authenticated = await isViewAuthorized(request, options)
-  let editAuthenticated = false
-  if (authenticated) {
-    if (!options.editToken) {
-      editAuthenticated = true
-    } else {
-      const ip = clientIp(request)
-      const provided = request.headers.get('x-edit-token')?.trim()
-      if (provided && !statusEditLocked(ip)) {
-        editAuthenticated = await isEditAuthorized(request, options)
-        if (editAuthenticated) {
-          statusEditFailures.delete(ip)
-        } else {
-          recordStatusEditFailure(ip)
-        }
-      }
-    }
-  }
+  const role = await authorizeAccess(request, options)
   return json(
     {
-      passwordRequired: Boolean(options.sitePassword),
-      editRequired: Boolean(options.editToken),
-      authenticated,
-      editAuthenticated,
+      passwordRequired: passwordRequired(options),
+      authenticated: role !== null,
+      canEdit: role === 'edit',
     },
     200,
     options.corsOrigin,
@@ -172,7 +122,7 @@ async function handleLogin(
   body: Record<string, unknown>,
   options: AccessOptions,
 ): Promise<Response> {
-  if (!options.sitePassword) {
+  if (!passwordRequired(options)) {
     return json(
       { error: 'not_configured', message: '本站未启用访问密码' },
       400,
@@ -194,9 +144,18 @@ async function handleLogin(
   }
 
   const password = typeof body.password === 'string' ? body.password : ''
-  const ok = password.length > 0 && (await constantTimeEqual(password, options.sitePassword))
+  // 两个密码都做常量时间比较，避免通过响应时间区分命中的是哪一个
+  const [matchesEdit, matchesView] = await Promise.all([
+    password.length > 0 && options.editPassword
+      ? constantTimeEqual(password, options.editPassword)
+      : Promise.resolve(false),
+    password.length > 0 && options.viewPassword
+      ? constantTimeEqual(password, options.viewPassword)
+      : Promise.resolve(false),
+  ])
+  const role: AccessRole | null = matchesEdit ? 'edit' : matchesView ? 'view' : null
 
-  if (!ok) {
+  if (!role) {
     const lockedFor = await guard.fail(ip)
     await appendAudit(backend, {
       actor: 'site',
@@ -210,14 +169,20 @@ async function handleLogin(
 
   await guard.reset(ip)
 
-  const { token, expiresAt } = await createToken(accessSecret(options), ACCESS_TTL_MS)
-  await appendAudit(backend, { actor: 'site', action: 'login', ip, ua, note: '访问密码登录' })
+  const { token, expiresAt } = await createToken(accessSecret(options), ACCESS_TTL_MS, role)
+  await appendAudit(backend, {
+    actor: 'site',
+    action: 'login',
+    ip,
+    ua,
+    note: role === 'edit' ? '可写密码登录' : '只读密码登录',
+  })
   return json(
     {
       token,
       expiresAt,
       passwordRequired: true,
-      editRequired: Boolean(options.editToken),
+      canEdit: role === 'edit',
     },
     200,
     options.corsOrigin,
@@ -233,7 +198,7 @@ export async function handleAccess(
   backend: Backend,
   options: AccessOptions = {},
 ): Promise<Response> {
-  // 与 /api/kv 保持一致：未配置 CORS_ORIGIN 时默认允许跨域（仅 Bearer/编辑令牌，不使用 Cookie）
+  // 与 /api/kv 保持一致：未配置 CORS_ORIGIN 时默认允许跨域（仅 Bearer，不使用 Cookie）
   const origin = options.corsOrigin ?? '*'
   const config: AccessOptions = { ...options, corsOrigin: origin }
 
@@ -249,6 +214,10 @@ export async function handleAccess(
     return json({ error: 'method_not_allowed' }, 405, origin)
   }
 
+  const declared = Number(request.headers.get('content-length') ?? 0)
+  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) {
+    return json({ error: 'payload_too_large', message: '请求体过大' }, 413, origin)
+  }
   const text = await request.text()
   if (encoder.encode(text).byteLength > MAX_BODY_BYTES) {
     return json({ error: 'payload_too_large', message: '请求体过大' }, 413, origin)

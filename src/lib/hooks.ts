@@ -1,10 +1,23 @@
 import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react'
+import { getAccessStatus, subscribeAccess } from './access'
 import { settings } from './settings'
 import { store } from './store'
 
 /** 订阅全局应用状态 */
 export function useAppState() {
   return useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot)
+}
+
+/** 当前是否为只读会话（只读密码或会话失效） */
+export function useReadOnly() {
+  return useSyncExternalStore(
+    subscribeAccess,
+    useCallback(() => {
+      const status = getAccessStatus()
+      return status ? !status.canEdit : false
+    }, []),
+    () => false,
+  )
 }
 
 /** 订阅单个设置项，返回 [value, setValue] */

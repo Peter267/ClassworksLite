@@ -11,7 +11,7 @@ import { StudentsDialog, SubjectsDialog } from '../components/PeopleDialogs'
 import { TimeCard } from '../components/TimeCard'
 import { UafTransferDialog } from '../components/UafTransferDialog'
 import { isPastDay, isSameDay, relativeDayLabel, today } from '../lib/date'
-import { useAppState, useMediaQuery, useMasonry, useSetting } from '../lib/hooks'
+import { useAppState, useMediaQuery, useMasonry, useReadOnly, useSetting } from '../lib/hooks'
 import { store } from '../lib/store'
 import { toast } from '../lib/toast'
 import type { ExamConfig } from '../lib/types'
@@ -80,8 +80,17 @@ export function Home({
   const isToday = isSameDay(state.date, today())
   const isPast = isPastDay(state.date)
   const dataReady = state.status === 'ready' && state.loaded
-  const editBlocked = isPast && blockPast
+  const readOnly = useReadOnly()
+  const historyLocked = isPast && blockPast
+  const editBlocked = historyLocked || readOnly
+  /** 卡片本身只受「未加载/历史禁编」限制：只读会话仍可打开查看 */
+  const cardDisabled = !dataReady || historyLocked
   const blockEditing = editBlocked || !dataReady
+  const editBlockedHint = readOnly
+    ? '当前为只读访问，请在 设置 → 服务器 → 访问权限 中退出后重新输入可写密码'
+    : !dataReady
+      ? '数据尚未加载完成'
+      : '设置中已禁止编辑历史数据'
   const randomPickVisible = randomEnabled && showRandomButton
 
   useEffect(() => {
@@ -155,8 +164,8 @@ export function Home({
         toast.error('数据尚未加载完成', '请刷新并成功加载后再编辑')
         return
       }
-      if (editBlocked) {
-        toast.warning('无法编辑', '设置中已禁止编辑历史数据')
+      if (historyLocked) {
+        toast.warning('无法编辑', editBlockedHint)
         return
       }
       setEditing({
@@ -166,7 +175,7 @@ export function Home({
         content: state.board.homework[name]?.content ?? '',
       })
     },
-    [dataReady, editBlocked, state.board.homework],
+    [dataReady, historyLocked, editBlockedHint, state.board.homework],
   )
 
   const openCustom = useCallback(
@@ -175,8 +184,8 @@ export function Home({
         toast.error('数据尚未加载完成', '请刷新并成功加载后再编辑')
         return
       }
-      if (editBlocked) {
-        toast.warning('无法编辑', '设置中已禁止编辑历史数据')
+      if (historyLocked) {
+        toast.warning('无法编辑', editBlockedHint)
         return
       }
       const item = state.board.homework[key]
@@ -187,7 +196,7 @@ export function Home({
         content: item?.content ?? '',
       })
     },
-    [dataReady, editBlocked, state.board.homework],
+    [dataReady, historyLocked, editBlockedHint, state.board.homework],
   )
 
   useEffect(() => {
@@ -294,7 +303,7 @@ export function Home({
             {state.offline && (
               <div className="v-alert v-alert--variant-tonal mb-4" data-color="warning">
                 <Icon name="cloudOff" size={18} />
-                当前展示的是本机保存的内容，网络恢复后会自动拉取最新数据。
+                当前展示的是本机缓存，网络恢复后会自动拉取最新数据。
               </div>
             )}
 
@@ -324,7 +333,7 @@ export function Home({
                           content={item.content}
                           custom={item.kind === 'custom'}
                           highlighted={highlight[item.key]}
-                          disabled={blockEditing}
+                          disabled={cardDisabled}
                           onOpen={() =>
                             item.kind === 'custom' ? openCustom(item.key) : openSubject(item.name)
                           }
@@ -348,7 +357,7 @@ export function Home({
                           key={subject.name}
                           name={subject.name}
                           variant="chip"
-                          disabled={blockEditing}
+                          disabled={cardDisabled}
                           onOpen={() => openSubject(subject.name)}
                         />
                       ))}
@@ -360,7 +369,7 @@ export function Home({
                           key={subject.name}
                           name={subject.name}
                           variant="button"
-                          disabled={blockEditing}
+                          disabled={cardDisabled}
                           onOpen={() => openSubject(subject.name)}
                         />
                       ))}
@@ -372,7 +381,7 @@ export function Home({
                           key={subject.name}
                           name={subject.name}
                           variant="card"
-                          disabled={blockEditing}
+                          disabled={cardDisabled}
                           onOpen={() => openSubject(subject.name)}
                         />
                       ))}
@@ -489,7 +498,7 @@ export function Home({
                       data-color="purple"
                       onClick={() => {
                         if (blockEditing) {
-                          toast.warning('无法编辑', !dataReady ? '数据尚未加载完成' : '设置中已禁止编辑历史数据')
+                          toast.warning('无法编辑', editBlockedHint)
                           return
                         }
                         const key = store.addCustomCard('测试卡片', '')
@@ -545,6 +554,7 @@ export function Home({
         date={state.date}
         isPast={isPast}
         custom={editing?.kind === 'custom'}
+        readOnly={readOnly}
         onRename={(name) => (editing ? store.renameCustomCard(editing.key, name) : false)}
         onDelete={() => (editing ? store.removeHomework(editing.key) : false)}
         onSave={(content) => (editing ? store.setHomework(editing.key, content) : false)}
@@ -558,7 +568,7 @@ export function Home({
         onBlocked={() =>
           toast.warning(
             '无法编辑',
-            !dataReady ? '数据尚未加载完成' : '设置中已禁止编辑历史数据',
+            editBlockedHint,
           )
         }
       />
@@ -578,7 +588,7 @@ export function Home({
           }}
           onRemove={() => {
             if (blockEditing) {
-              toast.warning('无法编辑', !dataReady ? '数据尚未加载完成' : '设置中已禁止编辑历史数据')
+              toast.warning('无法编辑', editBlockedHint)
               setExamDialog(null)
               return
             }

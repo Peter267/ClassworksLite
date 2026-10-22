@@ -1,10 +1,12 @@
 /**
- * 本地缓存层。
+ * 本机缓存层。
  *
  * 采用 localStorage 而不是 IndexedDB，原因：
  *  - 同步读写，首屏不依赖异步回调，弱网/隐私模式/无头环境下不会挂起；
  *  - 单个班级的数据量很小（每天几 KB），5MB 配额足够存放数年的历史；
  *  - 接口仍保持 Promise 形式，便于将来替换为 IndexedDB 或服务端缓存。
+ *
+ * 缓存只为加速与断网只读，不承担数据权威：所有改动都必须成功写入云端。
  */
 
 const PREFIX = 'classworks-lite:kv:'
@@ -13,11 +15,8 @@ export interface RawRecord {
   key: string
   value: unknown
   updatedAt: number
-  pending?: boolean
-  /** 本地模式/离线待同步的数据没有云端副本，不能作为配额淘汰候选 */
+  /** 该条已确认来自云端；旧版本机模式的遗留记录为 false */
   synced?: boolean
-  /** 离线写入时记录的云端基线，补传时用于检测冲突 */
-  baseUpdatedAt?: number | null
 }
 
 /** 本地存储不可写（配额耗尽或存储被禁用） */
@@ -80,10 +79,10 @@ export async function cacheSet(record: RawRecord): Promise<void> {
     store.setItem(PREFIX + record.key, payload)
     return
   } catch (err) {
-    // 配额不足：只清理「已同步」的旧记录，绝不淘汰待上传的离线副本
+    // 配额不足：只清理已同步的旧记录，刚写入的这条跳过
     console.warn('[cache] 写入失败，尝试清理已同步的旧记录', err)
     const reclaimable = readAll()
-      .filter((item) => item.key !== record.key && !item.pending && item.synced !== false)
+      .filter((item) => item.key !== record.key && item.synced !== false)
       .sort((a, b) => a.updatedAt - b.updatedAt)
     for (const stale of reclaimable.slice(0, Math.max(1, Math.ceil(reclaimable.length / 3)))) {
       store.removeItem(PREFIX + stale.key)
@@ -100,7 +99,7 @@ export async function cacheDelete(key: string): Promise<void> {
   storage()?.removeItem(PREFIX + key)
 }
 
-/** 清空本地缓存（设置页「清除本地缓存」使用） */
+/** 清空本机缓存（设置页「清除本机缓存」使用） */
 export async function cacheClear(): Promise<void> {
   const store = storage()
   if (!store) return
@@ -112,9 +111,3 @@ export async function cacheClear(): Promise<void> {
   names.forEach((name) => store.removeItem(name))
 }
 
-/** 导出全部本地数据，便于备份 */
-export async function cacheExport(): Promise<Record<string, unknown>> {
-  const result: Record<string, unknown> = {}
-  for (const record of readAll()) result[record.key] = record.value
-  return result
-}

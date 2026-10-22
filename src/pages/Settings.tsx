@@ -9,7 +9,6 @@ import { Modal } from '../components/ui/Modal'
 import { relativeTime } from '../lib/date'
 import { useAppState, useSettingsVersion } from '../lib/hooks'
 import { cacheClear } from '../lib/cache'
-import { getClient } from '../lib/kv'
 import { SETTING_DEFS, settings } from '../lib/settings'
 import { store } from '../lib/store'
 import { toast } from '../lib/toast'
@@ -83,7 +82,7 @@ const GROUP_SETTINGS: Partial<Record<TabKey, string[]>> = {
     'randomPicker.excludeExcluded',
   ],
   background: ['background.enabled', 'background.url', 'background.blur', 'background.opacity'],
-  server: ['server.provider', 'server.domain', 'server.siteKey', 'server.classNumber'],
+  server: ['server.classNumber'],
 }
 
 const GROUP_CARD: Partial<Record<TabKey, { title: string; icon: string }>> = {
@@ -123,7 +122,6 @@ export function SettingsPage({
   }, [active])
 
   const dev = settings.get<boolean>('developer.enabled')
-  const provider = settings.get<string>('server.provider')
   const theme = settings.get<string>('theme.mode')
 
   const renderList = (keys: string[]) => (
@@ -264,10 +262,10 @@ export function SettingsPage({
 
           {active === 'server' && (
             <>
-              <SettingsCard title="连接状态" icon="cloud" subtitle="云端模式下，作业数据会同步到班级共享站点">
-                <div className="grid grid-cols-2 sm:grid-cols-4" style={{ gap: 12 }}>
+              <SettingsCard title="连接状态" icon="cloud" subtitle="作业数据保存在班级共享站点，多台设备实时同步">
+                <div className="grid grid-cols-2 sm:grid-cols-3" style={{ gap: 12 }}>
                   {[
-                    { label: '存储模式', value: provider === 'cloud' ? '在线模式' : '本机模式' },
+                    { label: '数据来源', value: '云端' },
                     {
                       label: '同步状态',
                       value: state.saving
@@ -275,10 +273,9 @@ export function SettingsPage({
                         : state.dirty
                           ? '待上传'
                           : state.offline
-                            ? '离线保存'
+                            ? '离线缓存'
                             : '已同步',
                     },
-                    { label: '待同步', value: `${state.pendingSync} 条` },
                     {
                       label: '最后更新',
                       value: state.updatedAt ? relativeTime(state.updatedAt) : '—',
@@ -297,11 +294,11 @@ export function SettingsPage({
                     data-color="primary"
                     onClick={async () => {
                       const ok = await store.reinitialize()
-                      if (ok) toast.success('已重新连接', '配置已生效')
+                      if (ok) toast.success('已重新加载', '作业数据已从云端重新读取')
                     }}
                   >
                     <MdiIcon name="refresh" size={18} />
-                    应用并重连
+                    重新加载
                   </button>
                   <button
                     type="button"
@@ -322,7 +319,7 @@ export function SettingsPage({
 
               <AccessSettingsCard />
 
-              <SettingsCard title="数据源设置" icon="database">
+              <SettingsCard title="班级信息" icon="school">
                 {renderList(GROUP_SETTINGS.server ?? [])}
               </SettingsCard>
 
@@ -488,28 +485,16 @@ export function SettingsPage({
                     className="v-btn v-btn--size-small v-btn--variant-tonal"
                     data-color="error"
                     onClick={async () => {
-                      const local = settings.get<string>('server.provider') === 'local'
-                      let pending = 0
-                      try {
-                        pending = await getClient().pendingCount()
-                      } catch {
-                        /* ignore */
-                      }
-                      const message = local
-                        ? '当前为本机模式，清除后本机保存的所有作业都会丢失，确定继续吗？'
-                        : pending > 0
-                          ? `当前有 ${pending} 条尚未同步的离线改动，清除后也会丢失。确定继续吗？`
-                          : '清除本机数据后需要重新从云端拉取数据，确定继续吗？'
+                      const message = state.dirty
+                        ? '当前有尚未保存的改动，清除后也会丢失。确定继续吗？'
+                        : '清除本机缓存后需要重新从云端拉取数据，云端内容不受影响。确定继续吗？'
                       if (!window.confirm(message)) return
                       await cacheClear()
-                      toast.success(
-                        '已清除本机数据',
-                        local ? '本机数据已清空' : '云端数据不受影响，刷新后会重新拉取',
-                      )
+                      toast.success('已清除本机缓存', '刷新后会重新拉取云端数据')
                       window.setTimeout(() => window.location.reload(), 900)
                     }}
                   >
-                    清除本机数据
+                    清除本机缓存
                   </button>
                 </div>
               </SettingsCard>
@@ -530,12 +515,12 @@ export function SettingsPage({
               <div className="text-body-2">
                 <p className="mb-3">
                   ClassworksLite 是 Classworks 的开源重写版本：保留作业板、出勤统计、考试安排、随机点名、
-                  UAF 导入导出与环境噪音监测等核心功能，作业数据可离线使用，并在多台设备之间保持同步。
+                  UAF 导入导出与环境噪音监测等核心功能，作业数据保存在班级共享站点并在多台设备之间同步。
                 </p>
                 <div className="grid sm:grid-cols-2" style={{ gap: 8 }}>
                   {[
-                    ['数据存储', provider === 'cloud' ? '云端同步' : '仅本机保存'],
-                    ['离线能力', '离线可用，联网后自动同步'],
+                    ['数据存储', '云端同步'],
+                    ['离线能力', '页面已打开时断网可继续查看'],
                     ['多端同步', '多设备实时同步'],
                     ['许可', 'AGPL-3.0 开源'],
                   ].map(([label, value]) => (
@@ -581,8 +566,7 @@ export function SettingsPage({
         }
       >
         <p className="text-body-2">
-          所有设置项将回到初始值（包括站点地址与各类访问令牌），并切回本机模式；
-          作业数据、学生名单与科目本身不会被删除。
+          所有设置项将回到初始值；作业数据、学生名单与科目本身不会被删除。
         </p>
       </Modal>
     </>

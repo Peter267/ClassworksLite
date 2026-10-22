@@ -3,9 +3,8 @@
  *
  * 与服务端 server/admin-core.ts 对应：登录换取 HMAC 令牌，
  * 令牌只存 sessionStorage（关闭标签页即退出），不进入长期存储。
+ * 管理接口与站点同源。
  */
-
-import { getSetting } from './settings'
 
 const TOKEN_KEY = 'classworks-lite:admin-token'
 const TIMEOUT = 15_000
@@ -80,13 +79,6 @@ export interface AdminBackup {
   data: Record<string, { value: unknown; updatedAt: number }>
 }
 
-/** 与数据客户端共用「后端服务器域名」，未配置时使用当前站点 */
-function apiBase(): string {
-  const configured = getSetting('server.domain').trim()
-  if (!configured) return ''
-  return configured.replace(/\/+$/, '')
-}
-
 export function getAdminToken(): string | null {
   try {
     return sessionStorage.getItem(TOKEN_KEY)
@@ -115,7 +107,7 @@ async function call<T>(payload: Record<string, unknown>, token?: string): Promis
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), TIMEOUT)
   try {
-    const response = await fetch(`${apiBase()}/api/admin`, {
+    const response = await fetch('/api/admin', {
       method: 'POST',
       signal: controller.signal,
       headers: {

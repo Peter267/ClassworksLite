@@ -17,6 +17,8 @@ interface EditDialogProps {
   isPast: boolean
   /** 自定义卡片：允许改名与删除 */
   custom?: boolean
+  /** 只读会话：可以查看内容，但禁止保存与删除 */
+  readOnly?: boolean
   onRename?: (name: string) => boolean
   onDelete?: () => boolean
   onSave: (content: string) => boolean | Promise<boolean>
@@ -30,6 +32,7 @@ export function EditDialog({
   date,
   isPast,
   custom,
+  readOnly,
   onRename,
   onDelete,
   onSave,
@@ -89,7 +92,7 @@ export function EditDialog({
 
   /* 输入停顿 2 秒自动保存（F1）；只有写入被接受后才更新已保存基线 */
   useEffect(() => {
-    if (!open || !autoSave) return
+    if (!open || !autoSave || readOnly) return
     let cancelled = false
     const timer = setTimeout(() => {
       const next = content.trim()
@@ -109,9 +112,14 @@ export function EditDialog({
       cancelled = true
       clearTimeout(timer)
     }
-  }, [content, open, autoSave, custom])
+  }, [content, open, autoSave, custom, readOnly])
 
   const commit = useCallback(async () => {
+    // 只读会话不提交任何改动，直接关闭
+    if (readOnly) {
+      onClose()
+      return
+    }
     const next = content.trim()
     if (custom && next === '' && savedContent.current === '') {
       // 空白自定义卡片：清空即删除（F11）
@@ -129,7 +137,7 @@ export function EditDialog({
       }
     }
     onClose()
-  }, [content, custom, onDelete, onClose])
+  }, [content, custom, onDelete, onClose, readOnly])
 
   const insertAtCursor = (text: string) => {
     const el = textareaRef.current
@@ -215,14 +223,14 @@ export function EditDialog({
         void commit()
       }}
       title={<span className="text-truncate">{title}</span>}
-      subtitle={autoSave ? autoSaveText : manualSaveText}
+      subtitle={readOnly ? '只读访问，无法修改' : autoSave ? autoSaveText : manualSaveText}
       width={900}
       fullscreenOnMobile
       maskClosable={canvasClose}
     >
       <div className="d-flex">
         <div className="flex-grow-1" style={{ minWidth: 0 }}>
-          {custom && (
+          {custom && !readOnly && (
             <div className="d-flex align-center mb-3" style={{ gap: 8, maxWidth: 480 }}>
               <span className="text-caption" style={{ whiteSpace: 'nowrap', color: 'var(--text-3)' }}>
                 重命名
@@ -270,6 +278,7 @@ export function EditDialog({
             rows={5}
             placeholder="使用换行表示分条"
             value={content}
+            readOnly={readOnly}
             onChange={(event) => setContent(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
@@ -279,7 +288,7 @@ export function EditDialog({
             }}
           />
 
-          {showPaste && (
+          {showPaste && !readOnly && (
             <div className="d-flex justify-center mt-2" style={{ gap: 8 }}>
               <button type="button" className="v-btn v-btn--size-small v-btn--variant-outlined" onClick={() => void paste(false)}>
                 <Icon name="copy" size={14} />

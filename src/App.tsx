@@ -9,14 +9,17 @@ import { ExamBoard } from './pages/ExamBoard'
 import { Home } from './pages/Home'
 import { ListPage } from './pages/ListPage'
 import { SettingsPage } from './pages/Settings'
-import { refreshAccessStatus } from './lib/access'
+import {
+  ACCESS_STATUS_EVENT,
+  getAccessStatus,
+  refreshAccessStatus,
+} from './lib/access'
 import { useSetting } from './lib/hooks'
-import { getSetting } from './lib/settings'
 import { store } from './lib/store'
-import { toast } from './lib/toast'
+import { Icon } from './components/Icon'
 
 type Route = '/' | '/settings' | '/list' | '/exams' | '/admin'
-type AccessPhase = 'checking' | 'required' | 'ready'
+type AccessPhase = 'checking' | 'required' | 'ready' | 'unavailable'
 
 function normalizePath(path: string): Route {
   const clean = path.replace(/\/+$/, '') || '/'
@@ -93,6 +96,7 @@ export default function App() {
   )
   const [ready, setReady] = useState(() => path === '/admin')
   const [pendingEdit, setPendingEdit] = useState<string | null>(null)
+  const [retrying, setRetrying] = useState(false)
 
   const storeStarted = useRef(false)
 
@@ -118,6 +122,7 @@ export default function App() {
 
   useEffect(() => {
     if (path === '/admin') {
+      setAccessPhase('ready')
       setReady(true)
       return
     }
@@ -125,23 +130,20 @@ export default function App() {
       setReady(true)
       return
     }
-    // 访问密码是站点级限制：本地模式也要先通过，接口不存在（纯静态部署）时自动放行
+    // 访问密码是站点级限制：先确认访问状态，再决定是否加载云端数据
     setAccessPhase('checking')
     let alive = true
     void refreshAccessStatus().then((status) => {
       if (!alive) return
-      if (status?.passwordRequired && !status.authenticated) {
+      if (!status) {
+        setAccessPhase('unavailable')
+        return
+      }
+      if (status.passwordRequired && !status.authenticated) {
         setAccessPhase('required')
         return
       }
       setAccessPhase('ready')
-      if (
-        getSetting<string>('server.provider') === 'cloud' &&
-        status?.editRequired &&
-        !status.editAuthenticated
-      ) {
-        toast.warning('当前为只读模式', '在 设置 → 服务器 → 访问权限 中填写编辑令牌后可修改作业')
-      }
       startStore()
     })
     return () => {
@@ -149,7 +151,35 @@ export default function App() {
     }
   }, [path, startStore])
 
-  useEffect(() => () => store.destroy(), [])
+  const retryAccess = useCallback(() => {
+    if (retrying) return
+    setRetrying(true)
+    setAccessPhase('checking')
+    void refreshAccessStatus()
+      .then((status) => {
+        if (!status) {
+          setAccessPhase('unavailable')
+          return
+        }
+        if (status.passwordRequired && !status.authenticated) {
+          setAccessPhase('required')
+          return
+        }
+        setAccessPhase('ready')
+        startStore()
+      })
+      .finally(() => setRetrying(false))
+  }, [retrying, startStore])
+
+  // 会话失效时（令牌过期/被清）立即回到访问门，而不是让页面停在旧数据上
+  useEffect(() => {
+    const onStatusChange = () => {
+      const status = getAccessStatus()
+      if (status?.passwordRequired && !status.authenticated) setAccessPhase('required')
+    }
+    window.addEventListener(ACCESS_STATUS_EVENT, onStatusChange)
+    return () => window.removeEventListener(ACCESS_STATUS_EVENT, onStatusChange)
+  }, [])
 
   useEffect(() => {
     const onAccessDenied = () => {
@@ -239,10 +269,37 @@ export default function App() {
 
       {accessPhase === 'required' && <AccessGate onUnlocked={resumeAfterAccess} />}
 
+      {accessPhase === 'unavailable' && (
+        <div className="access-gate-wrap">
+          <div className="access-gate-card">
+            <span className="access-gate-icon">
+              <Icon name="cloudOff" size={30} />
+            </span>
+            <div role="alert">
+              <h1 className="text-h5">无法连接服务器</h1>
+              <p className="text-body-2 text-medium-emphasis mt-2">
+                请检查网络后重试；若持续失败，请联系班级管理员确认站点状态。
+              </p>
+            </div>
+            <button
+              type="button"
+              className="v-btn v-btn--variant-flat v-btn--size-large w-full mt-5"
+              data-color="primary"
+              onClick={retryAccess}
+              disabled={retrying}
+            >
+              {retrying ? '重试中…' : '重试'}
+            </button>
+          </div>
+        </div>
+      )}
+
       {(accessPhase === 'checking' || (showContent && !ready)) && (
         <div
           className="v-overlay"
           style={{ background: 'rgb(var(--v-theme-background))', zIndex: 3000 }}
+          role="status"
+          aria-live="polite"
         >
           <div className="d-flex flex-column align-center" style={{ gap: 12 }}>
             <div className="loading-spinner" />

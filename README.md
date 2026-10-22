@@ -5,11 +5,11 @@
 ClassworksLite 保留了 [Classworks](https://github.com/Moonrend/Classworks) 的界面语言与全部核心交互
 （文案、Material 3 视觉、作业卡片、出勤、考试看板、设置项均与上游一致），
 把原先需要常驻 Express + PostgreSQL + Socket.IO 的后端压缩成**一个 KV 函数**，
-前端是纯静态产物，可直接跑在 Cloudflare Pages、Cloudflare Workers 或 Vercel 上。
+前端为静态资源，后端只需一个同源的 KV 函数，可部署在 Cloudflare Pages、Cloudflare Workers 或 Vercel 上。
 
-- 零配置启动：默认本地模式（浏览器存储），打开即用
-- 一个函数即可联网：`GET/PUT/DELETE /api/kv`，约 200 行，无框架依赖
-- 离线可用：PWA 缓存 + 离线写入队列，断网照常记录，恢复后自动补传
+- 开箱即用：默认不设密码，部署后直接可用；设置密码后一个输入框区分只读 / 可写
+- 一个函数即可联网：`GET/PUT/DELETE /api/kv`，约 300 行，无框架依赖
+- 断网可看：读取走本机缓存，网络恢复后自动拉取最新数据；写入失败即时提示
 - 单文件数据模型：每天一条 KV 记录，兼容上游键名
 - 新特性：**UAF 作业导入导出**、**环境噪音监测**（晚自习时段自动记录与统计报告）、**密码保护的管理后台**（全站数据 / 日志 / 备份）
 
@@ -51,7 +51,7 @@ ClassworksLite 保留了 [Classworks](https://github.com/Moonrend/Classworks) �
 
 | 上游 | 本项目 | 原因 |
 | --- | --- | --- |
-| Classworks KV / 设备令牌 / OAuth | 本地模式 / 云端模式 + 访问密码、编辑令牌（旧版 `SITE_TOKEN` 仍兼容） | Serverless 无常驻会话，两级静态凭证即可满足单班级「查看 / 编辑」分离 |
+| Classworks KV / 设备令牌 / OAuth | 单一密码框 + 只读密码 / 可写密码两套凭证，令牌内置角色 | Serverless 无常驻会话；输入不同密码即获得不同权限，无需额外配置 |
 | Socket.IO 实时推送 | 15 秒增量轮询 + `BroadcastChannel`（同浏览器多标签即时） | 长连接需要常驻进程或 Durable Objects；轮询对作业板场景足够 |
 | PostgreSQL + Prisma | KV / Redis 键值存储 | 数据模型本来就是「按日期一条 JSON」，无需关系库 |
 | 设备聊天、紧急通知、消息日志 | 未实现 | 依赖常驻服务端推送 / 账号体系，与 Serverless 单班级目标无关 |
@@ -72,7 +72,7 @@ HarmonyOS Sans SC 字体，导出结果与上游一致。
   文件名格式：`Classworks-作业-YYYY-MM-DD.uaf.pdf`。
 - **导入**：选择内嵌 `uaf_payload.csv` 的 UAF PDF → 解析后按日期分组 →
   逐项选择「导入 / 跳过」；同名卡片默认「保留现有」，也可改为「覆盖现有」。
-- 导入按日期合并写回 `classworks-data-YYYYMMDD`，离线时自动进入补传队列。
+- 导入按日期合并写回 `classworks-data-YYYYMMDD`；写入失败会明确报错，不会暂存在本机。
 - 首次导出会下载约 24 MB 字体与 0.6 MB WASM（`public/uaf/`），建议开启 CDN 缓存。
 
 入口：作业板底部工具栏的 ⇅ 按钮（受 `display.showUafTransfer` 控制）。
@@ -91,34 +91,39 @@ HarmonyOS Sans SC 字体，导出结果与上游一致。
 - 校准：在已知环境分贝下做 3 秒自动校准，或手动填写基准分贝 / 基准 RMS / 最大分贝。
 - 相关设置：`noiseMonitor.enabled`、`noiseMonitor.autoStart`、`noiseMonitor.permissionDismissed`。
 
-## 访问密码与编辑权限
+## 访问密码与权限
 
-服务端支持两级访问控制，均由 `/api/auth` 与 `/api/kv` 联合校验，前端无法绕过：
+站点使用**一个密码输入框、两套密码**，由 `/api/auth` 与 `/api/kv` 联合校验，前端无法绕过：
 
-| 环境变量 | 作用 | 前端操作 |
+| 环境变量 | 作用 | 登录后的权限 |
 | --- | --- | --- |
-| `SITE_PASSWORD` | 打开网站时要求输入访问密码，通过后签发 7 天有效的 HMAC 访问令牌，用于读取作业 | 访问门自动弹出，输入一次即可 |
-| `EDIT_TOKEN` | 修改 / 删除作业时要求 `X-Edit-Token`，未配置则不限制写入 | 「设置 → 服务器 → 访问权限 → 编辑令牌」填写同值 |
-| `AUTH_SECRET` | 访问令牌签名密钥；修改后所有访客的访问状态立即失效 | — |
-| `SITE_TOKEN` | 旧版静态访问令牌，仍可作为访问凭证（Bearer / `X-Site-Key`） | 「设置 → 服务器 → 网站令牌」 |
+| `SITE_PASSWORD` | 只读密码：输入后可查看作业 | 只读，写入返回 403 `read_only` |
+| `EDIT_PASSWORD` | 可写密码：输入后可查看并修改作业 | 可读可写 |
+| `AUTH_SECRET` | 访问令牌签名密钥；修改后所有访客立即掉线 | — |
 
 行为说明：
 
-- 访问令牌保存在浏览器 localStorage，过期后自动回到访问门；「访问权限」卡片可手动
-  退出访问、重新校验。
-- 编辑令牌只保存在本地设置（localStorage），作为 `X-Edit-Token` 请求头发送；
-  `GET /api/auth` 状态校验也会携带该头（不会进入 URL），因此正确填写后会立即解锁编辑。
-- 只配置 `SITE_PASSWORD` 时，任何访客都能查看并编辑；只配置 `EDIT_TOKEN` 时不设
-  查看密码，但修改仍需令牌。
-- 服务端配置了编辑令牌但前端未填写或填写错误时，前端进入只读模式：编辑操作被拦截并提示，
-  不会产生失败的写入请求或离线队列。
-- 同一 IP 连续 5 次访问密码错误锁定 10 分钟，限流状态保存在保留键 `__access-guard`；
-  登录、失败与越权请求都会写入审计日志。
-- 旧部署没有 `/api/auth` 时，前端自动视为「未启用访问控制」，保持原有行为。
+- 两个密码都未配置时不启用访问门，站点完全开放（可读可写）。
+- 只配置 `EDIT_PASSWORD` 时，可写密码同时具备查看权限。
+- 只配置 `SITE_PASSWORD` 时站点为永久只读（没有任何途径获得写权限），适合公示用的副屏。
+- 登录成功后签发 7 天有效的 HMAC 令牌（`v2.<role>.<expiresAt>.<nonce>.<signature>`），
+  角色（`view` / `edit`）写入签名，服务端据此判定写权限；令牌保存在浏览器 localStorage，
+  过期后自动回到访问门。
+- 只读会话在前端即拦截编辑并提示，不会产生被拒绝的写入请求。
+- 同一 IP 连续 5 次密码错误锁定 10 分钟，限流状态保存在保留键 `__access-guard`；
+  登录、失败与越权写入都会写入审计日志。
+- 数据只保存在云端：本机仅保留读取缓存（断网时可查看，并明确标注为缓存），写操作不做
+  本地排队与补传，写入失败会直接提示。
+- 站点必须与 `/api/kv` 同源部署（前端不再提供服务器地址配置）。
+
+> **升级提示**：旧版的 `SITE_TOKEN` / `EDIT_TOKEN` 已彻底移除。沿用旧配置升级时，由于
+> 「未配置任何密码」，站点会变成完全开放；请在升级前把凭证改写为 `SITE_PASSWORD` /
+> `EDIT_PASSWORD`。另外 `AUTH_SECRET` 与两个密码共同参与令牌派生，修改其中任意一项都会让
+> 已签发的令牌立即失效。
 
 ```bash
-# 本地体验
-SITE_PASSWORD=class-password EDIT_TOKEN=teacher-token npm run dev
+# 本地体验：class-password 只读，teacher-password 可写
+SITE_PASSWORD=class-password EDIT_PASSWORD=teacher-password npm run dev
 ```
 
 ---
@@ -150,7 +155,8 @@ SITE_PASSWORD=class-password EDIT_TOKEN=teacher-token npm run dev
 
 安全设计：
 
-- 登录成功后签发 HMAC-SHA256 令牌（格式 `v1.<expiresAt>.<nonce>.<signature>`），
+- 登录成功后签发 HMAC-SHA256 令牌（格式 `v2.admin.<expiresAt>.<nonce>.<signature>`，与站点令牌共用实现），
+  本次升级后旧的管理会话会失效一次，需要重新登录；
   有效期 12 小时；令牌保存在 `sessionStorage`，关闭标签页即退出，不写入 localStorage。
 - 密码比较与签名校验均为常量时间；同一 IP 连续 5 次密码错误锁定 10 分钟，
   限流状态保存在保留键 `__admin-guard`。
@@ -210,21 +216,19 @@ npm run dev          # http://localhost:3031
 或用 `/?edit=语文` 直接打开某一科的编辑框。
 
 `npm run dev` 自带一个本地 KV 服务（`server/dev-kv-plugin.ts`），把 `/api/kv`
-落到 `.data/kv.json`。因此在设置里切到「云端同步」也能在本地完整跑通读写与离线队列，
-不需要提前部署后端。
+落到 `.data/kv.json`。因此本地即可完整跑通读写，不需要提前部署后端。
 
 管理后台在本地同样可用：在仓库根目录的 `.env.local` 写入 `ADMIN_PASSWORD=你的密码`，
 或直接运行 `ADMIN_PASSWORD=你的密码 npm run dev`，然后访问
 `http://localhost:3031/admin`。
 
-访问密码与编辑令牌同理，写入 `.env.local` 或直接通过命令行传入：
+访问密码同理，写入 `.env.local` 或直接通过命令行传入：
 
 ```bash
-SITE_PASSWORD=class-password EDIT_TOKEN=teacher-token npm run dev
+SITE_PASSWORD=class-password EDIT_PASSWORD=teacher-password npm run dev
 ```
 
-配置 `SITE_PASSWORD` 后刷新页面即可看到访问门；编辑令牌在「设置 → 服务器 → 访问权限」填写。
-纯静态部署（没有 `/api/auth`）会自动跳过访问门。
+配置任一密码后刷新页面即可看到访问门：输入只读密码进入只读模式，输入可写密码可编辑。
 
 其他命令：
 
@@ -257,11 +261,10 @@ npm run preview      # 预览构建结果（同样带本地 KV）
    - 输出目录：`dist`
 
 4. （可选）环境变量：
-   - `SITE_PASSWORD`：启用访问密码，访客输入后才能查看作业
-   - `EDIT_TOKEN`：启用编辑令牌，修改作业需在设置中填写同值
+   - `SITE_PASSWORD`：只读密码，输入后可查看作业
+   - `EDIT_PASSWORD`：可写密码，输入后可查看并修改作业
    - `AUTH_SECRET`：访问令牌签名密钥（可选，推荐单独设置）
-   - `SITE_TOKEN`：旧版静态访问令牌（可选，迁移期兼容）
-   - `CORS_ORIGIN`：限制允许来源，默认 `*`
+   - `CORS_ORIGIN`：限制允许的跨域来源（仅供外部脚本/客户端使用，站点自身固定同源），默认 `*`
    - `ADMIN_PASSWORD`：启用管理后台（必需，否则 `/admin` 不可用）
    - `ADMIN_SECRET`：管理令牌签名密钥（可选，推荐单独设置）
 
@@ -279,10 +282,9 @@ npx wrangler deploy
 敏感值用 `npx wrangler secret put` 写入：
 
 ```bash
-npx wrangler secret put SITE_PASSWORD    # 访问密码（查看作业前登录）
-npx wrangler secret put EDIT_TOKEN       # 编辑令牌（修改作业时校验）
+npx wrangler secret put SITE_PASSWORD    # 只读密码
+npx wrangler secret put EDIT_PASSWORD    # 可写密码
 npx wrangler secret put AUTH_SECRET      # 可选，访问令牌签名
-npx wrangler secret put SITE_TOKEN       # 可选，旧版静态令牌
 npx wrangler secret put ADMIN_PASSWORD   # 管理后台必需
 npx wrangler secret put ADMIN_SECRET     # 可选
 ```
@@ -296,18 +298,17 @@ npx wrangler secret put ADMIN_SECRET     # 可选
 2. Vercel 项目环境变量：
    - `UPSTASH_REDIS_REST_URL`
    - `UPSTASH_REDIS_REST_TOKEN`
-   - 访问控制：`SITE_PASSWORD`、`EDIT_TOKEN`、`AUTH_SECRET`（均可选）
-   - 旧版兼容：`SITE_TOKEN`；跨域：`CORS_ORIGIN`
+   - 访问控制：`SITE_PASSWORD`（只读密码）、`EDIT_PASSWORD`（可写密码）、`AUTH_SECRET`（均可选）
+   - 跨域限制：`CORS_ORIGIN`（可选，站点自身固定同源调用）
    - 管理后台：`ADMIN_PASSWORD`（必需）、`ADMIN_SECRET`（可选）
 3. 直接导入仓库，`vercel.json` 已配置构建与 SPA 重写
 
-### 方案四：纯静态（本地模式）
+### 同源部署要求
 
-`npm run build` 后把 `dist/` 丢到任意静态托管即可。没有 `/api/kv` 时，
-应用会停留在本地模式，数据只存在当前浏览器。
+前端只调用同源的 `/api/*`，不再提供站点地址配置。`dist/` 必须与接口部署在同一个域名下
+（Cloudflare Pages / Workers、Vercel 均满足）；纯静态托管无法使用，因为没有云端数据源。
 
-> 多台设备需要共享数据时，才需要云端模式。
-> 使用 UAF 导出 / 噪音监测均为浏览器端能力，纯静态部署同样可用。
+> UAF 导出 / 噪音监测均为浏览器端能力，任何部署方式下都可用。
 
 ---
 
@@ -352,29 +353,28 @@ __access-guard                → 访问密码失败限流状态（按 IP 哈希
 ## API 契约
 
 ```
-GET    /api/auth           → 200 { passwordRequired, editRequired, authenticated, editAuthenticated }
-POST   /api/auth           → body { action: "login", password } → 200 { token, expiresAt, ... } | 401 / 429
-GET    /api/kv?key=K       → 200 { key, value, updatedAt } | 404 { error: "not_found" }
+GET    /api/auth           → 200 { passwordRequired, authenticated, canEdit }
+POST   /api/auth           → body { action: "login", password } → 200 { token, expiresAt, passwordRequired, canEdit } | 401 / 429
+GET    /api/kv?key=K       → 200 { key, value, updatedAt } | 404 { error: "not_found", key }
 GET    /api/kv?prefix=P    → 200 { keys: [{ key, updatedAt }], truncated }
 PUT    /api/kv             → body { key, value, baseUpdatedAt? } → 200 { key, updatedAt } | 409 { error: "conflict", updatedAt }
-DELETE /api/kv?key=K       → 200 { ok: true }
+DELETE /api/kv?key=K       → 200 { ok: true, key }
 GET    /api/health         → 200 { ok: true, service: "classworks-lite-kv", ts }
 POST   /api/admin          → body { action, ... } → 200 { ... } | 400 / 401 / 409 / 413 / 429 / 503
 ```
 
-- 查看鉴权：配置 `SITE_PASSWORD` 时，`/api/kv` 需要
-  `Authorization: Bearer <登录返回的令牌>`（7 天有效）；未配置时回退到
-  `Authorization: Bearer <SITE_TOKEN>` 或 `X-Site-Key: <SITE_TOKEN>`，都未配置则跳过
-- 编辑鉴权：配置 `EDIT_TOKEN` 时，`PUT` / `DELETE` 还需要
-  `X-Edit-Token: <EDIT_TOKEN>`，缺失或错误返回 403 `edit_token_required`
-- `/api/auth` 登录成功返回 HMAC-SHA256 令牌（`v1.<expiresAt>.<nonce>.<signature>`），
+- 访问令牌：配置任一密码时，`/api/kv` 需要 `Authorization: Bearer <登录返回的令牌>`
+  （7 天有效）；两个密码都未配置时跳过校验
+- 写权限：`PUT` / `DELETE` 要求令牌角色为 `edit`，只读令牌返回 403 `read_only`
+- `/api/auth` 登录成功返回 HMAC-SHA256 令牌（`v2.<role>.<expiresAt>.<nonce>.<signature>`），
+  密码与 `SITE_PASSWORD` / `EDIT_PASSWORD` 比对，命中哪个决定角色；
   同一 IP 连续 5 次密码错误返回 429，锁定 10 分钟
 - 管理接口：除 `login` 外的动作都需要 `Authorization: Bearer <adminToken>`
   （或 `X-Admin-Token`），令牌由 `login` 返回
 - 单条上限 1 MB，键长上限 200 字符；`prefix` 最多返回 500 个键并用 `truncated` 标记
 - `PUT` 可带 `baseUpdatedAt` 做条件写：数字表示期望的当前版本，`null` 表示期望键不存在；
   版本不匹配返回 409 和当前 `updatedAt`
-- `__` 前缀为内部保留键（`__audit:*`、`__admin-logs`、`__admin-guard`），公开接口不可读写，
+- `__` 前缀为内部保留键（`__audit:*`、`__admin-logs`、`__admin-guard`、`__access-guard`），公开接口不可读写，
   也不会出现在 `prefix` 查询与管理后台的数据列表中
 - 所有响应 `Cache-Control: no-store`
 
@@ -408,8 +408,9 @@ POST   /api/admin          → body { action, ... } → 200 { ... } | 400 / 401 
 │   ├── pages/               作业板 / 设置 / 列表 / 考试看板 / 管理后台
 │   ├── lib/
 │   │   ├── store.ts         全局数据中心（作业、出勤、名单、同步）
-│   │   ├── kv.ts            本地 / 云端客户端，含离线队列
-│   │   ├── access.ts        访问令牌、访问状态与编辑令牌
+│   │   ├── kv.ts            云端客户端与只读缓存
+│   │   ├── cache.ts         本机缓存（localStorage，仅缓存）
+│   │   ├── access.ts        访问状态、令牌存储与角色判定
 │   │   ├── admin.ts         管理接口客户端（登录、数据、日志、备份）
 │   │   ├── noise.ts         噪音采集、评分、校准与报告存储
 │   │   ├── uafExport.ts     UAF 校验、预览、导入计划与落盘
@@ -422,7 +423,7 @@ POST   /api/admin          → body { action, ... } → 200 { ... } | 400 / 401 
 │   └── manifest.webmanifest PWA 清单（名称为 ClassworksLite）
 ├── server/
 │   ├── kv-core.ts           与平台无关的 KV 处理器
-│   ├── auth-core.ts         访问密码 / 编辑令牌校验（/api/auth）
+│   ├── auth-core.ts         只读 / 可写密码校验与角色令牌（/api/auth）
 │   ├── token.ts             HMAC 令牌签发与常量时间校验
 │   ├── login-guard.ts       登录失败限流（管理后台与访问密码共用）
 │   ├── admin-core.ts        管理接口（登录、数据管理、备份）
@@ -451,7 +452,7 @@ POST   /api/admin          → body { action, ... } → 200 { ... } | 400 / 401 
 **为什么保留 15 秒轮询。**
 Serverless 没有常驻连接，Socket.IO 不可用。作业板的更新频率是「一天几十次」，
 轮询成本可以忽略；同浏览器的多标签用 `BroadcastChannel` 做到即时。轮询只在
-云端模式、页面可见、且没有未保存改动时执行。
+云端数据、页面可见、且没有未保存改动时执行。
 
 **为什么设置项不进云端。**
 主题、字号、布局偏好是「这台设备」的属性，班级大屏和手机不应该互相覆盖。
@@ -461,9 +462,9 @@ Serverless 没有常驻连接，Socket.IO 不可用。作业板的更新频率�
 分贝曲线是细粒度时序数据，单次晚自习可达上千点；放进 KV 会迅速放大存储与同步成本。
 报告按日期保留最近 40 条，足够回看；需要长期归档时再用 UAF 或截图导出。
 
-**离线优先。**
-云端模式下所有读取先读本地缓存（命中时先渲染），再等网络结果覆盖；写入失败会
-标记 `pending`，`online` 事件触发时自动补传。界面顶部的状态会如实反映同步情况。
+**本机缓存只读。**
+读取先看本机缓存并立即渲染，网络结果返回后覆盖；断网时界面明确标注「本机缓存」。
+写入不做本地排队：请求失败直接提示，避免出现「看起来保存了、实际没上传」的状态。
 
 ---
 

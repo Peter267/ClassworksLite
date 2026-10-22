@@ -5,7 +5,8 @@
  *   UPSTASH_REDIS_REST_URL
  *   UPSTASH_REDIS_REST_TOKEN
  * 可选：
- *   SITE_TOKEN     启用访问令牌
+ *   SITE_PASSWORD  只读密码
+ *   EDIT_PASSWORD  可写密码
  *   CORS_ORIGIN    允许的来源，默认 *
  */
 import { handleKV } from '../server/kv-core'
@@ -28,10 +29,9 @@ export default async function handler(request: Request): Promise<Response> {
   }
 
   return handleKV(request, new UpstashBackend(url, token), {
-    siteToken: process.env.SITE_TOKEN,
-    sitePassword: process.env.SITE_PASSWORD,
+    viewPassword: process.env.SITE_PASSWORD,
+    editPassword: process.env.EDIT_PASSWORD,
     authSecret: process.env.AUTH_SECRET,
-    editToken: process.env.EDIT_TOKEN,
     corsOrigin: process.env.CORS_ORIGIN,
   })
 }

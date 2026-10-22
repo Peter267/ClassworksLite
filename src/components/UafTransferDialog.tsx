@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Icon } from './Icon'
 import { Modal } from './ui/Modal'
 import { toDateKey, today } from '../lib/date'
+import { isReadOnly, notifyReadOnly } from '../lib/access'
 import { getClient } from '../lib/kv'
 import { getSetting } from '../lib/settings'
 import { store } from '../lib/store'
@@ -277,6 +278,10 @@ export function UafTransferDialog({
 
   const doImport = async () => {
     if (!importPlan || busy) return
+    if (isReadOnly()) {
+      notifyReadOnly()
+      return
+    }
     const activeRows = importPlan.rows.filter((row) => row.action !== 'keep')
     const activeDates = [...new Set(activeRows.map((row) => row.date))]
     const todayKey = toDateKey(today())

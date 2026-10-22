@@ -17,13 +17,12 @@ id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
 # CORS_ORIGIN = "https://your-domain.com"
 
 # 敏感值请用 `npx wrangler secret put` 写入，不要提交到仓库：
-#   npx wrangler secret put SITE_PASSWORD       # 访问密码：查看作业前需要登录
-#   npx wrangler secret put EDIT_TOKEN          # 编辑令牌：修改作业时需要
+#   npx wrangler secret put SITE_PASSWORD       # 只读密码：输入后可查看作业
+#   npx wrangler secret put EDIT_PASSWORD       # 可写密码：输入后可查看并修改作业
 #   npx wrangler secret put AUTH_SECRET         # 可选，访问令牌签名
-#   npx wrangler secret put SITE_TOKEN          # 可选，旧版静态访问令牌
 #   npx wrangler secret put ADMIN_PASSWORD      # 管理后台（/admin）必需
 #   npx wrangler secret put ADMIN_SECRET        # 可选，用于令牌签名
 # 本地 `wrangler dev` 时也可写在 .dev.vars：
 #   ADMIN_PASSWORD=change-me
 #   SITE_PASSWORD=class-password
-#   EDIT_TOKEN=teacher-edit-token
+#   EDIT_PASSWORD=teacher-password

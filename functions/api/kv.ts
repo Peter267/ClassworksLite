@@ -4,7 +4,7 @@
  * 部署步骤见 README：
  *  1. 在 Cloudflare 控制台创建 KV 命名空间
  *  2. Pages 项目 → 设置 → Functions → KV 命名空间绑定，变量名填 KV
- *  3. （可选）添加环境变量 SITE_TOKEN 启用鉴权
+ *  3. （可选）添加环境变量 SITE_PASSWORD / EDIT_PASSWORD 启用只读与可写密码
  *  4. 构建命令 npm run build，输出目录 dist
  */
 import { createKVBackend, type KVNamespaceLike } from '../../server/cloudflare'
@@ -13,9 +13,8 @@ import { handleKV } from '../../server/kv-core'
 interface Env {
   KV: KVNamespaceLike
   SITE_PASSWORD?: string
-  EDIT_TOKEN?: string
+  EDIT_PASSWORD?: string
   AUTH_SECRET?: string
-  SITE_TOKEN?: string
   CORS_ORIGIN?: string
 }
 
@@ -25,10 +24,9 @@ export async function onRequest(context: {
 }): Promise<Response> {
   const { request, env } = context
   const options = {
-    siteToken: env.SITE_TOKEN,
-    sitePassword: env.SITE_PASSWORD,
+    viewPassword: env.SITE_PASSWORD,
+    editPassword: env.EDIT_PASSWORD,
     authSecret: env.AUTH_SECRET,
-    editToken: env.EDIT_TOKEN,
     corsOrigin: env.CORS_ORIGIN,
   }
 

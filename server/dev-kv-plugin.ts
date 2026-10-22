@@ -8,7 +8,7 @@ import { handleKV, healthResponse, type Backend } from './kv-core'
 /**
  * 本地开发用的 KV 接口：把 /api/kv、/api/auth 与 /api/admin 落到 .data/kv.json。
  *
- * 这样 `npm run dev` 就能完整走通「云端模式」、访问密码与管理后台，不必先部署后端。
+ * 这样 `npm run dev` 就能完整走通云端读写、访问密码与管理后台，不必先部署后端。
  * 环境变量优先取 Vite 加载的 .env，其次取进程环境。
  */
 export function devKV(env: Record<string, string | undefined> = {}): Plugin {
@@ -116,17 +116,15 @@ export function devKV(env: Record<string, string | undefined> = {}): Plugin {
               })
             : url.pathname === '/api/auth'
               ? await handleAccess(request, backend, {
-                  sitePassword: readEnv('SITE_PASSWORD'),
-                  editToken: readEnv('EDIT_TOKEN'),
-                  siteToken: readEnv('SITE_TOKEN'),
+                  viewPassword: readEnv('SITE_PASSWORD'),
+                  editPassword: readEnv('EDIT_PASSWORD'),
                   secret: readEnv('AUTH_SECRET'),
                   corsOrigin: readEnv('CORS_ORIGIN'),
                 })
               : await handleKV(request, backend, {
-                  siteToken: readEnv('SITE_TOKEN'),
-                  sitePassword: readEnv('SITE_PASSWORD'),
+                  viewPassword: readEnv('SITE_PASSWORD'),
+                  editPassword: readEnv('EDIT_PASSWORD'),
                   authSecret: readEnv('AUTH_SECRET'),
-                  editToken: readEnv('EDIT_TOKEN'),
                   corsOrigin: readEnv('CORS_ORIGIN'),
                 })
 

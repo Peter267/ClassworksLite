@@ -3753,7 +3753,6 @@
     inset: 0;
     z-index: 2400;
     display: flex;
-    align-items: center;
     justify-content: center;
     padding: 24px 16px;
     overflow: auto;
@@ -3767,6 +3766,8 @@
     flex-direction: column;
     width: 100%;
     max-width: 420px;
+    /* margin:auto 在可滚动容器里既居中又不会裁掉顶部 */
+    margin: auto;
     padding: 32px 28px 26px;
     border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
     border-radius: 24px;

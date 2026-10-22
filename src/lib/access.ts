@@ -1,12 +1,14 @@
 /**
  * 站点访问控制客户端。
  *
- * 访问密码登录后拿到 HMAC 令牌，保存在 localStorage（服务端有效期 7 天），
- * 读取 /api/kv 时通过 Authorization 携带；编辑令牌来自设置 server.editToken，
- * 写入 / 删除时通过 X-Edit-Token 携带。
+ * 站点只有云端一份数据，读取前先向 /api/auth 确认访问状态：
+ *  - 未启用访问密码：直接进入，可读可写；
+ *  - 已启用：弹出密码门，只读密码与可写密码共用同一个输入框，
+ *    登录后由服务端签发的令牌携带角色，客户端据此决定能否编辑。
+ *
+ * 令牌保存在 localStorage（有效期 7 天），读写 /api/kv 时通过 Authorization 携带。
  */
 
-import { getSetting } from './settings'
 import { toast } from './toast'
 
 const TOKEN_KEY = 'classworks-lite:access-token'
@@ -28,20 +30,17 @@ export class AccessError extends Error {
 
 export interface AccessStatus {
   passwordRequired: boolean
-  editRequired: boolean
   authenticated: boolean
-  editAuthenticated: boolean
-  /** 后端没有 /api/auth（旧版部署） */
-  unsupported: boolean
+  /** 使用可写密码登录时为 true；只读密码为 false */
+  canEdit: boolean
   checkedAt: number
 }
 
 let status: AccessStatus | null = null
 const listeners = new Set<() => void>()
-let lastEditNotice = 0
-let editTokenTimer: ReturnType<typeof setTimeout> | null = null
 /** 隐私模式下 localStorage 不可用时，令牌只保留在内存中 */
 let memoryToken: { token: string; expiresAt: number } | null = null
+let readOnlyNoticeAt = 0
 
 function emit() {
   listeners.forEach((fn) => fn())
@@ -59,10 +58,9 @@ export function getAccessStatus(): AccessStatus | null {
   return status
 }
 
-function apiBase(): string {
-  const configured = getSetting('server.domain').trim()
-  if (!configured) return ''
-  return configured.replace(/\/+$/, '')
+function setStatus(next: AccessStatus) {
+  status = next
+  emit()
 }
 
 /* ------------------------------------------------------------------ */
@@ -113,14 +111,29 @@ export function clearAccessToken() {
   }
 }
 
-/** 读取凭证：优先访问令牌，其次旧版静态 SITE_TOKEN */
-export function getAccessCredential(): string | null {
-  return getAccessToken() ?? (getSetting('server.siteKey').trim() || null)
+/** 服务端拒绝令牌：立即把会话标记为未认证，避免后续自动保存继续打 401 */
+export function markUnauthenticated() {
+  clearAccessToken()
+  setStatus({
+    passwordRequired: true,
+    authenticated: false,
+    canEdit: false,
+    checkedAt: Date.now(),
+  })
 }
 
-export function editTokenHeaders(): Record<string, string> {
-  const token = getSetting('server.editToken').trim()
-  return token ? { 'X-Edit-Token': token } : {}
+/** 当前是否只有查看权限；未认证（令牌失效）按只读处理，避免误触发写入 */
+export function isReadOnly(): boolean {
+  if (!status) return false
+  return !status.canEdit
+}
+
+/** 只读用户尝试写入时给出一次提示，避免连续操作刷屏 */
+export function notifyReadOnly(): void {
+  const now = Date.now()
+  if (now - readOnlyNoticeAt < 3000) return
+  readOnlyNoticeAt = now
+  toast.warning('当前为只读访问', '需要修改作业时，请在 设置 → 服务器 → 访问权限 中退出后重新输入可写密码')
 }
 
 /* ------------------------------------------------------------------ */
@@ -128,7 +141,7 @@ export function editTokenHeaders(): Record<string, string> {
 /* ------------------------------------------------------------------ */
 
 function baseHeaders(): Record<string, string> {
-  const token = getAccessCredential()
+  const token = getAccessToken()
   return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
@@ -136,7 +149,7 @@ async function request(path: string, init: RequestInit = {}): Promise<Response> 
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), TIMEOUT)
   try {
-    return await fetch(`${apiBase()}${path}`, {
+    return await fetch(path, {
       ...init,
       signal: controller.signal,
       headers: {
@@ -149,7 +162,7 @@ async function request(path: string, init: RequestInit = {}): Promise<Response> 
     if (err instanceof DOMException && err.name === 'AbortError') {
       throw new AccessError(0, 'timeout', '请求超时，请检查网络')
     }
-    throw new AccessError(0, 'network_error', '无法连接服务，请检查网络')
+    throw new AccessError(0, 'network_error', '无法连接服务器，请检查网络')
   } finally {
     clearTimeout(timer)
   }
@@ -163,49 +176,27 @@ async function readError(response: Response): Promise<{ error?: string; message?
   }
 }
 
-/** 状态请求必须同时携带访问令牌和编辑令牌，否则 editAuthenticated 永远为 false */
-function notifyEditAuthorized(next: AccessStatus) {
-  status = next
-  emit()
-  if (
-    typeof window !== 'undefined' &&
-    next.authenticated &&
-    (!next.editRequired || next.editAuthenticated)
-  ) {
-    // kv.ts 监听该事件清除“写入被拒”的粘滞标记
-    window.dispatchEvent(new CustomEvent('classworks-lite:edit-authorized'))
-  }
-}
-
-/** 拉取服务端访问状态；网络失败返回 null 并保留上一次状态 */
+/**
+ * 拉取服务端访问状态。
+ * 返回 null 表示站点未部署接口或网络不可用——调用方应展示「无法连接」而不是放行。
+ */
 export async function refreshAccessStatus(): Promise<AccessStatus | null> {
   try {
-    const response = await request('/api/auth', {
-      method: 'GET',
-      headers: editTokenHeaders(),
-    })
-    if (response.status === 404) {
-      notifyEditAuthorized({
-        passwordRequired: false,
-        editRequired: false,
-        authenticated: true,
-        editAuthenticated: true,
-        unsupported: true,
-        checkedAt: Date.now(),
-      })
-      return status
-    }
+    const response = await request('/api/auth', { method: 'GET' })
     if (!response.ok) return null
-    const data = (await response.json()) as Partial<AccessStatus>
-    notifyEditAuthorized({
+    const data = (await response.json()) as {
+      passwordRequired?: boolean
+      authenticated?: boolean
+      canEdit?: boolean
+    }
+    const next: AccessStatus = {
       passwordRequired: Boolean(data.passwordRequired),
-      editRequired: Boolean(data.editRequired),
       authenticated: Boolean(data.authenticated),
-      editAuthenticated: Boolean(data.editAuthenticated),
-      unsupported: false,
+      canEdit: Boolean(data.canEdit),
       checkedAt: Date.now(),
-    })
-    return status
+    }
+    setStatus(next)
+    return next
   } catch {
     return null
   }
@@ -226,32 +217,24 @@ export async function loginWithPassword(password: string): Promise<AccessStatus>
     )
   }
 
-  const data = (await response.json()) as { token?: unknown; expiresAt?: unknown }
+  const data = (await response.json()) as {
+    token?: unknown
+    expiresAt?: unknown
+    canEdit?: unknown
+  }
   if (typeof data.token !== 'string' || typeof data.expiresAt !== 'number') {
     throw new AccessError(500, 'bad_response', '登录状态异常，请刷新页面重试')
   }
 
   setAccessToken(data.token, data.expiresAt)
-  const next = await refreshAccessStatus()
-  if (next) return next
-
-  const fallback: AccessStatus = {
+  const next: AccessStatus = {
     passwordRequired: true,
-    editRequired: Boolean(getSetting('server.editToken').trim()),
     authenticated: true,
-    editAuthenticated: false,
-    unsupported: false,
+    canEdit: Boolean(data.canEdit),
     checkedAt: Date.now(),
   }
-  status = fallback
-  emit()
-  return fallback
-}
-
-/** 服务端要求编辑令牌但当前令牌未通过校验时为只读模式；本地模式不受云端状态影响 */
-export function isEditLocked(): boolean {
-  if (getSetting<string>('server.provider') !== 'cloud') return false
-  return Boolean(status?.editRequired && !status.editAuthenticated)
+  setStatus(next)
+  return next
 }
 
 /* ------------------------------------------------------------------ */
@@ -259,46 +242,12 @@ export function isEditLocked(): boolean {
 /* ------------------------------------------------------------------ */
 
 if (typeof window !== 'undefined') {
-  // 编辑令牌 / 服务器地址 / 站点令牌 / 存储模式变更后重新校验；状态更新事件供 store 恢复自动保存
-  window.addEventListener('classworks-lite:settings', (event) => {
-    const key = (event as CustomEvent<{ key?: string }>).detail?.key
-    if (!key) return
-    if (key === 'server.editToken') {
-      window.dispatchEvent(new CustomEvent('classworks-lite:edit-token-changed'))
-    } else if (
-      key !== 'server.domain' &&
-      key !== 'server.siteKey' &&
-      key !== 'server.provider'
-    ) {
-      return
-    }
-    if (editTokenTimer) clearTimeout(editTokenTimer)
-    editTokenTimer = setTimeout(() => {
-      editTokenTimer = null
-      if (getSetting<string>('server.provider') === 'cloud') {
-        void refreshAccessStatus()
-      } else {
-        // 本模式无需联网校验，清掉云端遗留的只读状态
-        status = null
-        emit()
-      }
-    }, 600)
-  })
-
-  window.addEventListener('classworks-lite:edit-denied', () => {
-    const now = Date.now()
-    if (now - lastEditNotice > 5000) {
-      lastEditNotice = now
-      toast.warning('需要编辑令牌', '请在 设置 → 服务器 → 访问权限 中填写后重试')
-    }
-    void refreshAccessStatus()
-  })
-
   window.addEventListener('storage', (event) => {
     if (event.key === TOKEN_KEY || event.key === EXPIRES_KEY) {
-      // 另一个标签页更新/清除了令牌，丢弃本标签页的内存副本后重新读取
+      // 另一个标签页更新/清除了令牌，丢弃本标签页的内存副本后重新确认角色
       memoryToken = null
       emit()
+      void refreshAccessStatus()
     }
   })
 }

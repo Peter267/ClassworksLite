@@ -2,7 +2,7 @@ import { useState, type FormEvent } from 'react'
 import { Icon } from './Icon'
 import { loginWithPassword } from '../lib/access'
 
-/** 全屏访问密码门：服务端启用 SITE_PASSWORD 时在加载数据前显示 */
+/** 全屏访问密码门：站点启用访问密码时在加载数据前显示 */
 export function AccessGate({ onUnlocked }: { onUnlocked: () => void }) {
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
@@ -10,7 +10,8 @@ export function AccessGate({ onUnlocked }: { onUnlocked: () => void }) {
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!password || busy) return
+    const value = password.trim()
+    if (!value || busy) return
     setBusy(true)
     setError(null)
     try {
@@ -32,13 +33,14 @@ export function AccessGate({ onUnlocked }: { onUnlocked: () => void }) {
         </span>
         <h1 className="text-h5">需要访问密码</h1>
         <p className="text-body-2 text-medium-emphasis mt-2">
-          输入班级访问密码后查看作业。若站点启用了编辑令牌，修改作业还需要在
-          「设置 → 服务器 → 访问权限」中填写相同值。
+          输入班级访问密码后查看/编辑作业
         </p>
 
         <label className="block mt-6">
           <span className="text-caption text-medium-emphasis">访问密码</span>
           <input
+            id="access-password"
+            name="password"
             className="v-field mt-2"
             type="password"
             autoFocus
@@ -47,11 +49,13 @@ export function AccessGate({ onUnlocked }: { onUnlocked: () => void }) {
             value={password}
             onChange={(event) => setPassword(event.target.value)}
             disabled={busy}
+            aria-invalid={Boolean(error)}
+            aria-describedby={error ? 'access-password-error' : undefined}
           />
         </label>
 
         {error && (
-          <div className="access-gate-error" role="alert">
+          <div className="access-gate-error" id="access-password-error" role="alert">
             {error}
           </div>
         )}
@@ -60,7 +64,7 @@ export function AccessGate({ onUnlocked }: { onUnlocked: () => void }) {
           type="submit"
           className="v-btn v-btn--variant-flat v-btn--size-large w-full mt-5"
           data-color="primary"
-          disabled={busy || password.length === 0}
+          disabled={busy || password.trim().length === 0}
         >
           {busy ? '验证中…' : '进入作业板'}
         </button>

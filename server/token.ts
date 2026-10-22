@@ -1,11 +1,21 @@
 /**
  * HMAC 令牌签发与校验：管理后台与站点访问密码共用。
  *
- * 令牌格式：v1.<expiresAt>.<nonce>.<signature>
- * 签名覆盖前两段与随机数，expiresAt 到期后服务端直接拒绝。
+ * 令牌格式：v2.<role>.<expiresAt>.<nonce>.<signature>
+ * 签名覆盖角色、有效期与随机数，expiresAt 到期后服务端直接拒绝。
+ * 角色写入令牌本身：同一入口输入的密码不同，拿到的权限也不同。
  */
 
 const encoder = new TextEncoder()
+
+export type TokenRole = 'view' | 'edit' | 'admin'
+
+const ROLES: TokenRole[] = ['view', 'edit', 'admin']
+
+export interface TokenPayload {
+  expiresAt: number
+  role: TokenRole
+}
 
 export function base64url(bytes: Uint8Array): string {
   let binary = ''
@@ -58,21 +68,27 @@ async function tokenSignature(secret: string, payload: string): Promise<string> 
 export async function createToken(
   secret: string,
   ttlMs: number,
+  role: TokenRole,
 ): Promise<{ token: string; expiresAt: number }> {
   const expiresAt = Date.now() + ttlMs
   const nonceBytes = new Uint8Array(8)
   crypto.getRandomValues(nonceBytes)
-  const payload = `v1.${expiresAt}.${base64url(nonceBytes)}`
+  const payload = `v2.${role}.${expiresAt}.${base64url(nonceBytes)}`
   return { token: `${payload}.${await tokenSignature(secret, payload)}`, expiresAt }
 }
 
-export async function verifyToken(token: string, secret: string): Promise<number | null> {
+export async function verifyToken(
+  token: string,
+  secret: string,
+): Promise<TokenPayload | null> {
   const parts = token.split('.')
-  if (parts.length !== 4 || parts[0] !== 'v1') return null
-  const expiresAt = Number(parts[1])
+  if (parts.length !== 5 || parts[0] !== 'v2') return null
+  const role = parts[1] as TokenRole
+  if (!ROLES.includes(role)) return null
+  const expiresAt = Number(parts[2])
   if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) return null
-  const payload = `${parts[0]}.${parts[1]}.${parts[2]}`
+  const payload = `${parts[0]}.${parts[1]}.${parts[2]}.${parts[3]}`
   const expected = await tokenSignature(secret, payload)
-  if (!(await constantTimeEqual(expected, parts[3]))) return null
-  return expiresAt
+  if (!(await constantTimeEqual(expected, parts[4]))) return null
+  return { expiresAt, role }
 }

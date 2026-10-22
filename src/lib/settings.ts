@@ -359,38 +359,6 @@ export const SETTING_DEFS: Record<string, SettingDef> = {
   },
 
   /* ---------------- 服务器 ---------------- */
-  'server.provider': {
-    type: 'string',
-    default: 'local',
-    label: '数据提供者',
-    group: 'server',
-    options: [
-      { value: 'local', label: '本机模式' },
-      { value: 'cloud', label: '在线模式' },
-    ],
-  },
-  'server.domain': {
-    type: 'string',
-    default: '',
-    label: '站点地址',
-    group: 'server',
-  },
-  'server.siteKey': {
-    type: 'string',
-    default: '',
-    label: '网站令牌',
-    hint: '旧版站点需要填写网站令牌；启用访问密码后由登录自动获取，无需再填。',
-    group: 'server',
-    secret: true,
-  },
-  'server.editToken': {
-    type: 'string',
-    default: '',
-    label: '编辑令牌',
-    hint: '站点设置了编辑令牌时，需填写相同值才能修改作业；未设置时默认允许修改。',
-    group: 'server',
-    secret: true,
-  },
   'server.classNumber': {
     type: 'string',
     default: '高三八班',
@@ -527,7 +495,7 @@ class SettingsStore {
       /* ignore */
     }
     this.listeners.forEach((fn) => fn())
-    // 逐个广播变更：数据客户端依赖 server.* 事件重建（F7）
+    // 逐个广播变更：轮询、噪音等消费者按 key 响应（F7）
     if (typeof window !== 'undefined') {
       for (const [key, value] of Object.entries(this.state)) {
         if (previous[key] === value) continue

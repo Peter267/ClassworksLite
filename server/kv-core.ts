@@ -10,7 +10,7 @@
  */
 
 import { appendAudit, clientIp, clientUserAgent } from './audit'
-import { isEditAuthorized, isViewAuthorized } from './auth-core'
+import { authorizeAccess } from './auth-core'
 
 export interface StoredRecord {
   /** 业务数据本身 */
@@ -30,14 +30,12 @@ export interface Backend {
 }
 
 export interface HandlerOptions {
-  /** 旧版静态访问令牌；为空表示不校验 */
-  siteToken?: string
-  /** 站点访问密码；配置后读取需要 /api/auth 签发的令牌 */
-  sitePassword?: string
-  /** 访问令牌签名密钥，留空时使用 SITE_PASSWORD */
+  /** 只读密码；配置后读取需要 /api/auth 签发的令牌 */
+  viewPassword?: string
+  /** 可写密码；配置后写入 / 删除需要可写令牌 */
+  editPassword?: string
+  /** 访问令牌签名密钥，留空时由两个密码派生 */
   authSecret?: string
-  /** 编辑令牌；配置后写入 / 删除需要 X-Edit-Token */
-  editToken?: string
   /** 允许跨域的来源，默认 * */
   corsOrigin?: string
 }
@@ -45,41 +43,9 @@ export interface HandlerOptions {
 const MAX_KEY_LENGTH = 200
 const MAX_BODY_BYTES = 1_000_000
 const MAX_PREFIX_KEYS = 500
-const EDIT_FAILURE_LIMIT = 5
-const EDIT_FAILURE_LOCK_MS = 10 * 60 * 1000
 const encoder = new TextEncoder()
 
-/** 编辑令牌失败限流：KV 没有原子计数，这里做单实例尽力而为的防线 */
-const editFailures = new Map<string, { n: number; first: number; until: number }>()
 const deniedAuditAt = new Map<string, number>()
-
-function editLockedMinutes(ip: string): number {
-  const entry = editFailures.get(ip)
-  if (!entry || entry.until <= Date.now()) return 0
-  return Math.ceil((entry.until - Date.now()) / 60_000)
-}
-
-function recordEditFailure(ip: string): number {
-  const now = Date.now()
-  const current = editFailures.get(ip)
-  const next =
-    current && now - current.first < EDIT_FAILURE_LOCK_MS
-      ? current
-      : { n: 0, first: now, until: 0 }
-  next.n += 1
-  if (next.n >= EDIT_FAILURE_LIMIT) next.until = now + EDIT_FAILURE_LOCK_MS
-  editFailures.set(ip, next)
-  if (editFailures.size > 500) {
-    for (const [key, value] of editFailures) {
-      if (value.until <= now) editFailures.delete(key)
-    }
-  }
-  return next.until > now ? Math.ceil((next.until - now) / 60_000) : 0
-}
-
-function clearEditFailure(ip: string) {
-  editFailures.delete(ip)
-}
 
 /** 未授权请求不逐条写审计，避免匿名流量耗尽 KV 写额度 */
 function shouldAuditDenied(ip: string): boolean {
@@ -98,7 +64,7 @@ function shouldAuditDenied(ip: string): boolean {
 const CORS_HEADERS = (origin: string): Record<string, string> => ({
   'Access-Control-Allow-Origin': origin,
   'Access-Control-Allow-Methods': 'GET, PUT, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Site-Key, X-Edit-Token',
+  'Access-Control-Allow-Headers': 'Authorization, Content-Type',
   'Access-Control-Max-Age': '86400',
   Vary: 'Origin',
 })
@@ -152,9 +118,8 @@ export async function handleKV(
   const origin = options.corsOrigin ?? '*'
   // HandlerOptions 沿用 authSecret，校验函数统一使用 secret
   const access = {
-    sitePassword: options.sitePassword,
-    editToken: options.editToken,
-    siteToken: options.siteToken,
+    viewPassword: options.viewPassword,
+    editPassword: options.editPassword,
     secret: options.authSecret,
   }
 
@@ -165,55 +130,37 @@ export async function handleKV(
   const ip = clientIp(request)
   const ua = clientUserAgent(request)
 
-  if (!(await isViewAuthorized(request, access))) {
+  const role = await authorizeAccess(request, access)
+  if (!role) {
     if (shouldAuditDenied(ip)) {
       await appendAudit(backend, {
         actor: 'site',
         action: 'denied',
         ip,
         ua,
-        note: options.sitePassword ? '缺少或过期的访问令牌' : '站点令牌无效',
+        note: options.viewPassword || options.editPassword ? '缺少或过期的访问令牌' : '访问令牌无效',
       })
     }
     return json({ error: 'unauthorized', message: '需要访问授权' }, 401, origin)
   }
 
   const isWrite = request.method === 'PUT' || request.method === 'DELETE'
-  if (isWrite && options.editToken) {
-    const lockMinutes = editLockedMinutes(ip)
-    if (lockMinutes > 0) {
-      return json(
-        { error: 'too_many_attempts', message: `编辑令牌错误次数过多，请 ${lockMinutes} 分钟后再试` },
-        429,
-        origin,
-      )
-    }
-  }
-
-  if (isWrite && !(await isEditAuthorized(request, access))) {
-    const lockMinutes = options.editToken ? recordEditFailure(ip) : 0
+  if (isWrite && role !== 'edit') {
     if (shouldAuditDenied(ip)) {
       await appendAudit(backend, {
         actor: 'site',
         action: 'denied',
         ip,
         ua,
-        note: lockMinutes > 0 ? '编辑令牌连续错误，已临时锁定' : '编辑令牌无效',
+        note: '只读令牌尝试写入',
       })
     }
     return json(
-      {
-        error: 'edit_token_required',
-        message:
-          lockMinutes > 0
-            ? `编辑令牌错误次数过多，请 ${lockMinutes} 分钟后再试`
-            : '需要编辑令牌才能修改作业',
-      },
-      lockMinutes > 0 ? 429 : 403,
+      { error: 'read_only', message: '当前为只读访问，无法修改作业' },
+      403,
       origin,
     )
   }
-  if (isWrite) clearEditFailure(ip)
 
   const url = new URL(request.url)
   const key = url.searchParams.get('key')
@@ -316,7 +263,7 @@ export async function handleKV(
         actor: 'site',
         action: 'write',
         key: body.key,
-        size: text.length,
+        size: encoder.encode(text).byteLength,
         ip: clientIp(request),
         ua: clientUserAgent(request),
       })

@@ -5,14 +5,15 @@
  * 全局只有一份状态，卡片、工具栏、对话框共享，避免层层透传 props。
  */
 
-import { ACCESS_STATUS_EVENT, isEditLocked } from './access'
+import { ACCESS_STATUS_EVENT, isReadOnly, notifyReadOnly } from './access'
 import { DEFAULT_STUDENTS, DEFAULT_SUBJECTS } from './defaults'
 import { isSameDay, toDateKey, today } from './date'
 import {
   broadcastChange,
   ConflictError,
   getClient,
-  refreshClient,
+  NetworkError,
+  ReadOnlyError,
   SaveError,
   syncChannel,
 } from './kv'
@@ -47,11 +48,9 @@ export interface AppState {
   exams: ExamConfig[]
   dirty: boolean
   saving: boolean
-  queued: boolean
   updatedAt: number | null
-  pendingSync: number
+  /** 当前展示的是本机缓存（网络不可用） */
   offline: boolean
-  source: 'local' | 'cloud'
   /** 当前作业板是否成功从数据源读取；读取失败时禁止覆盖写入 */
   loaded: boolean
   /** 花名册/科目/考试是否成功读取；未成功时禁止用默认值覆盖云端 */
@@ -95,12 +94,10 @@ class BoardStore {
   private pollTimer: ReturnType<typeof setInterval> | null = null
   /** 读取序号：切换日期时丢弃过期响应，避免旧日期数据落到新日期（D2） */
   private loadSeq = 0
-  private initialized = false
-  private channelBound = false
+  private initPromise: Promise<void> | null = null
+  private bindingDone = false
   private settingsBound = false
   private accessBound = false
-  private settingsTimer: ReturnType<typeof setTimeout> | null = null
-  private readOnlyNoticeAt = 0
   private lastCatalogPoll = 0
   /** 最近一次成功读取/写入各目录键的版本，用于条件写而不是临时 GET */
   private catalogUpdatedAt: Record<string, number | null> = {}
@@ -118,11 +115,8 @@ class BoardStore {
     exams: [],
     dirty: false,
     saving: false,
-    queued: false,
     updatedAt: null,
-    pendingSync: 0,
     offline: false,
-    source: 'local',
     loaded: false,
     catalogLoaded: false,
     lastRefresh: null,
@@ -146,38 +140,18 @@ class BoardStore {
   /* 初始化                                                            */
   /* ---------------------------------------------------------------- */
 
-  async init() {
-    if (this.initialized) return
-    this.initialized = true
+  /** 幂等初始化：并发调用复用同一个 Promise，避免首屏提前宣布 ready */
+  init(): Promise<void> {
+    if (!this.initPromise) this.initPromise = this.bootstrap()
+    return this.initPromise
+  }
 
-    const mode = refreshClient()
-    this.patch({ source: mode })
-
+  private async bootstrap() {
     const urlDate = this.readDateFromUrl()
     const initialDate = urlDate ?? today()
     this.patch({ date: initialDate, dateKey: toDateKey(initialDate) })
 
     await Promise.all([this.loadCatalog(), this.loadBoard()])
-
-    // 上次离线留下的待同步队列必须在启动时补传，不能只依赖 online 事件
-    if (getSetting<string>('server.provider') === 'cloud') {
-      try {
-        const pending = await getClient().pendingCount()
-        if (pending > 0) {
-          const flushed = await getClient().flush()
-          this.patch({ pendingSync: await getClient().pendingCount() })
-          if (flushed > 0) {
-            toast.success('已补传离线改动', `${flushed} 条数据已同步`)
-            if (!this.state.dirty) {
-              await this.loadBoard(true)
-              await this.loadCatalog()
-            }
-          }
-        }
-      } catch (err) {
-        console.warn('[store] 启动补传失败', err)
-      }
-    }
 
     if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('demo')) {
       // 演示数据必须在对外宣布 ready 之前写完，否则 ?edit= 深链会读到空数据
@@ -194,7 +168,6 @@ class BoardStore {
     if (typeof window !== 'undefined') {
       window.addEventListener('online', this.handleOnline)
       window.addEventListener('offline', this.handleOffline)
-      window.addEventListener('classworks-lite:sync-error', this.handleSyncError)
       document.addEventListener('visibilitychange', this.handleVisibility)
     }
   }
@@ -267,11 +240,6 @@ class BoardStore {
       console.warn('[store] 考试配置加载失败', examResult.reason)
     }
 
-    try {
-      patch.pendingSync = await client.pendingCount()
-    } catch {
-      /* 统计失败不影响配置读取 */
-    }
     patch.catalogLoaded = complete || this.state.catalogLoaded
     this.catalogUpdatedAt = { ...this.catalogUpdatedAt, ...versions }
     this.patch(patch)
@@ -301,7 +269,6 @@ class BoardStore {
         error: null,
         dirty: false,
         loaded: true,
-        queued: Boolean(entry?.pending),
         offline: Boolean(entry?.stale),
         lastRefresh: Date.now(),
       })
@@ -316,8 +283,13 @@ class BoardStore {
 
   async refresh() {
     if (this.state.dirty) {
-      toast.warning('有未保存的改动', '请先上传或撤销，再刷新数据')
-      return
+      if (!isReadOnly()) {
+        toast.warning('有未保存的改动', '请先上传或撤销，再刷新数据')
+        return
+      }
+      // 只读会话无法上传，直接放弃本地改动以恢复读取
+      this.patch({ dirty: false })
+      toast.warning('已丢弃未保存的改动', '只读会话无法上传，正在重新读取云端数据')
     }
     const before = this.state.updatedAt
     const [boardOk, catalogOk] = await Promise.all([this.loadBoard(true), this.loadCatalog()])
@@ -371,13 +343,10 @@ class BoardStore {
   /* 作业编辑                                                          */
   /* ---------------------------------------------------------------- */
 
-  private ensureEditable(): boolean {
-    if (!isEditLocked()) return true
-    const now = Date.now()
-    if (now - this.readOnlyNoticeAt > 3000) {
-      this.readOnlyNoticeAt = now
-      toast.warning('只读模式', '请在 设置 → 服务器 → 访问权限 中填写编辑令牌')
-    }
+  /** 只读密码进入的会话不允许改动；写权限由服务端令牌角色决定 */
+  private ensureWritable(): boolean {
+    if (!isReadOnly()) return true
+    notifyReadOnly()
     return false
   }
 
@@ -386,7 +355,7 @@ class BoardStore {
       toast.error('数据尚未加载完成', '请刷新并成功加载后再编辑')
       return false
     }
-    if (!this.ensureEditable()) return false
+    if (!this.ensureWritable()) return false
     this.patch({ board: next, dirty: true })
     this.scheduleSave()
     return true
@@ -446,7 +415,7 @@ class BoardStore {
 
   /** 把当前日期的作业复制到今天（只补空缺，不覆盖已有内容） */
   async copyToToday(): Promise<number> {
-    if (!this.ensureEditable()) return 0
+    if (!this.ensureWritable()) return 0
     // 与 goToDate 一致：先保存当前日期的未保存改动，失败则不得切换
     if (this.state.dirty) {
       const ok = await this.save({ silent: true, auto: this.canAutoSave() })
@@ -479,7 +448,7 @@ class BoardStore {
     if (count === 0) return 0
 
     try {
-      const { entry: saved, queued } = await client.set(KEYS.board(targetKey), target, {
+      const { entry: saved } = await client.set(KEYS.board(targetKey), target, {
         baseUpdatedAt: entry?.updatedAt ?? null,
       })
       broadcastChange(KEYS.board(targetKey))
@@ -489,9 +458,8 @@ class BoardStore {
         board: target,
         dirty: false,
         loaded: true,
-        queued,
-        offline: queued,
-        updatedAt: queued ? entry?.updatedAt ?? null : saved.updatedAt,
+        offline: false,
+        updatedAt: saved.updatedAt,
         status: 'ready',
       })
       return count
@@ -581,7 +549,7 @@ class BoardStore {
       toast.error('数据尚未加载完成', '为避免覆盖云端数据，请刷新并成功加载后再保存')
       return false
     }
-    if (!this.ensureEditable()) return false
+    if (!this.ensureWritable()) return false
 
     // 历史数据保存确认统一在这里做，所有入口（首页上传/出勤完成/列表保存/设置立即上传）都不会绕过（F5）
     if (
@@ -604,8 +572,7 @@ class BoardStore {
         let base = this.state.updatedAt
         for (let attempt = 0; ; attempt += 1) {
           try {
-            const result = await getClient().set(key, snapshot, { baseUpdatedAt: base })
-            return { ...result, base }
+            return await getClient().set(key, snapshot, { baseUpdatedAt: base })
           } catch (err) {
             if (err instanceof ConflictError && attempt === 0) {
               if (typeof err.updatedAt === 'number') {
@@ -626,34 +593,33 @@ class BoardStore {
           }
         }
       })()
-      const { entry, queued, base: writtenBase } = stored
+      const { entry } = stored
       // 保存期间又有新的编辑：保持 dirty，稍后继续保存（D3）
       const changedWhileSaving = this.state.board !== snapshot
+      // 让在途的轮询/读取响应失效，避免旧快照把刚保存的内容回滚
+      this.loadSeq += 1
       this.patch({
         saving: false,
         dirty: changedWhileSaving,
-        queued,
-        // 离线队列保留服务端基线，避免下一次保存把本地时间戳当成版本
-        updatedAt: queued ? writtenBase : entry.updatedAt,
-        offline: queued,
-        pendingSync: await getClient().pendingCount(),
+        updatedAt: entry.updatedAt,
+        offline: false,
       })
       if (changedWhileSaving) this.scheduleSave()
       broadcastChange(key)
-      if (queued) {
-        toast.warning('已保存到本机', '网络恢复后会自动同步到云端')
-      } else if (!opts.silent) {
-        toast.success('保存成功', '已同步作业数据')
-      }
+      if (!opts.silent) toast.success('保存成功', '已同步作业数据')
       return true
     } catch (err) {
       this.patch({ saving: false })
       if (err instanceof ConflictError) {
-        toast.warning('保存冲突', '数据已被其他设备修改，已保留本机改动；请刷新后再处理')
+        toast.warning('保存冲突', '数据已被其他设备修改，已保留当前改动；请刷新后再处理')
+      } else if (err instanceof ReadOnlyError) {
+        notifyReadOnly()
       } else if (err instanceof SaveError) {
         toast.error('保存被拒绝', err.message)
+      } else if (err instanceof NetworkError) {
+        toast.error('保存失败', '无法连接服务器，改动仍保留在当前页面，联网后会自动重试')
       } else {
-        toast.error('保存失败', err instanceof Error ? err.message : '请检查同步配置')
+        toast.error('保存失败', err instanceof Error ? err.message : '请检查网络')
       }
       return false
     }
@@ -664,7 +630,7 @@ class BoardStore {
   /* ---------------------------------------------------------------- */
 
   private catalogWritable(): boolean {
-    if (getSetting<string>('server.provider') === 'cloud' && !this.state.catalogLoaded) {
+    if (!this.state.catalogLoaded) {
       toast.error('名单/科目尚未加载完成', '为避免覆盖云端数据，请刷新并成功加载后再修改')
       return false
     }
@@ -680,18 +646,20 @@ class BoardStore {
   private writeCatalog<T>(
     key: string,
     value: T,
-  ): Promise<{ queued: boolean; updatedAt: number } | null> {
+  ): Promise<{ updatedAt: number } | null> {
     return this.enqueueCatalogWrite(async () => {
       try {
         const client = getClient()
-        const { entry, queued } = await client.set(key, value, {
+        const { entry } = await client.set(key, value, {
           baseUpdatedAt: this.catalogUpdatedAt[key] ?? null,
         })
-        if (!queued) this.catalogUpdatedAt[key] = entry.updatedAt
-        return { queued, updatedAt: entry.updatedAt }
+        this.catalogUpdatedAt[key] = entry.updatedAt
+        return { updatedAt: entry.updatedAt }
       } catch (err) {
         if (err instanceof ConflictError) {
           toast.warning('保存冲突', '数据已被其他设备修改，请刷新后重试')
+        } else if (err instanceof ReadOnlyError) {
+          notifyReadOnly()
         } else if (err instanceof SaveError) {
           toast.error('保存被拒绝', err.message)
         } else {
@@ -703,7 +671,7 @@ class BoardStore {
   }
 
   async setStudents(names: string[]): Promise<boolean> {
-    if (!this.ensureEditable() || !this.catalogWritable()) return false
+    if (!this.ensureWritable() || !this.catalogWritable()) return false
     const clean = Array.from(new Set(names.map((n) => n.trim()).filter(Boolean)))
     const previous = this.state.students
     // 先同步更新内存，保证快速连续增删都基于最新名单；写入失败再回滚
@@ -735,12 +703,6 @@ class BoardStore {
       this.commitBoard({ ...this.state.board, attendance: nextAttendance })
     }
 
-    try {
-      this.patch({ pendingSync: await getClient().pendingCount() })
-    } catch {
-      /* ignore */
-    }
-    if (saved.queued) toast.warning('已保存到本机', '学生名单将在联网后同步')
     return true
   }
 
@@ -755,9 +717,9 @@ class BoardStore {
   async setSubjects(
     subjects: Subject[],
     options: { renames?: { from: string; to: string }[] } = {},
-  ): Promise<{ saved: boolean; renamed: number; queued: boolean }> {
-    if (!this.ensureEditable() || !this.catalogWritable()) {
-      return { saved: false, renamed: 0, queued: false }
+  ): Promise<{ saved: boolean; renamed: number }> {
+    if (!this.ensureWritable() || !this.catalogWritable()) {
+      return { saved: false, renamed: 0 }
     }
     const clean = subjects
       .map((s, index) => ({ name: s.name.trim(), order: index }))
@@ -766,17 +728,39 @@ class BoardStore {
       (item) => item.from && item.to && item.from !== item.to,
     )
 
+    // 改名要迁移历史日期的作业键：先确认能安全读完列表，再写科目表，避免科目已改而作业留在旧键
+    if (renames.length > 0) {
+      if (!this.state.loaded) {
+        toast.error('作业板尚未加载完成', '请刷新并成功加载后再改名')
+        return { saved: false, renamed: 0 }
+      }
+      try {
+        const probe = await getClient().list(KEYS.board(''))
+        if (probe.truncated || probe.stale) {
+          toast.warning(
+            '未改名',
+            probe.stale
+              ? '离线状态下无法确认所有日期的作业，请联网后重试'
+              : '历史数据键过多，无法安全完成全量迁移',
+          )
+          return { saved: false, renamed: 0 }
+        }
+      } catch (err) {
+        toast.warning('未改名', err instanceof Error ? err.message : '无法读取历史日期列表')
+        return { saved: false, renamed: 0 }
+      }
+    }
+
     const saved = await this.writeCatalog(KEYS.subjects, clean)
-    if (!saved) return { saved: false, renamed: 0, queued: false }
+    if (!saved) return { saved: false, renamed: 0 }
 
     this.patch({ subjects: clean })
     broadcastChange(KEYS.subjects)
-    if (saved.queued) toast.warning('已保存到本机', '科目表将在联网后同步')
 
     // 改名后迁移历史作业键，否则旧作业会留在孤立键里（D7）
     let renamed = 0
     for (const item of renames) renamed += await this.renameSubject(item.from, item.to)
-    return { saved: true, renamed, queued: saved.queued }
+    return { saved: true, renamed }
   }
 
   /**
@@ -784,7 +768,7 @@ class BoardStore {
    * 返回实际迁移的日期数量。
    */
   async renameSubject(from: string, to: string): Promise<number> {
-    if (!this.ensureEditable()) return 0
+    if (!this.ensureWritable()) return 0
     const target = to.trim()
     if (!from || !target || target === from) return 0
     const client = getClient()
@@ -802,16 +786,20 @@ class BoardStore {
       return 0
     }
     if (listed.stale) {
-      toast.warning('正在使用本机数据迁移', '联网后请再次执行改名以补齐未缓存的历史日期')
+      toast.warning('未改名', '离线状态下无法确认所有日期的作业，请联网后重试')
+      return 0
     }
 
-    // 当前日期先改内存，界面立即正确
+    // 当前日期先改内存，界面立即正确；改不动就整体中止，避免科目表与作业脱节
     const currentHomework = this.state.board.homework
     if (currentHomework[from]) {
       const homework = { ...currentHomework }
       homework[target] = { ...homework[from] }
       delete homework[from]
-      this.commitBoard({ ...this.state.board, homework })
+      if (!this.commitBoard({ ...this.state.board, homework })) {
+        toast.warning('未改名', '当前作业板尚未就绪，请刷新后重试')
+        return 0
+      }
     }
 
     let migrated = 0
@@ -836,7 +824,7 @@ class BoardStore {
   }
 
   async saveExam(exam: ExamConfig): Promise<boolean> {
-    if (!this.ensureEditable() || !this.catalogWritable()) return false
+    if (!this.ensureWritable() || !this.catalogWritable()) return false
     const exists = this.state.exams.some((item) => item.id === exam.id)
     const next = exists
       ? this.state.exams.map((item) => (item.id === exam.id ? exam : item))
@@ -850,7 +838,7 @@ class BoardStore {
   }
 
   async deleteExam(id: string): Promise<boolean> {
-    if (!this.ensureEditable() || !this.catalogWritable()) return false
+    if (!this.ensureWritable() || !this.catalogWritable()) return false
     if (!this.state.loaded) {
       toast.error('作业板尚未加载完成', '请刷新后再删除考试，避免留下孤立卡片')
       return false
@@ -888,7 +876,6 @@ class BoardStore {
     const cardKey = `exam-${id}`
     const currentKey = KEYS.board(this.state.dateKey)
     let currentSavedAt: number | null = null
-    let currentQueued = false
     let cleanupFailed = false
     for (const { key } of listed.keys) {
       try {
@@ -897,12 +884,11 @@ class BoardStore {
         const board = normalizeBoard(entry.value)
         if (!board.homework[cardKey]) continue
         delete board.homework[cardKey]
-        const { entry: written, queued } = await client.set(key, board, {
+        const { entry: written } = await client.set(key, board, {
           baseUpdatedAt: entry.updatedAt,
         })
         if (key === currentKey) {
           currentSavedAt = written.updatedAt
-          currentQueued = queued
         }
       } catch (err) {
         cleanupFailed = true
@@ -921,8 +907,6 @@ class BoardStore {
         board: { ...this.state.board, homework },
         updatedAt: currentSavedAt,
         dirty: false,
-        queued: currentQueued,
-        offline: currentQueued,
       })
     }
 
@@ -950,7 +934,6 @@ class BoardStore {
   }
 
   private async pollOnce() {
-    if (getSetting<string>('server.provider') !== 'cloud') return
     if (!getSetting<boolean>('sync.realtime')) return
     if (this.state.dirty || this.state.saving) return
     if (typeof document !== 'undefined' && document.hidden) return
@@ -961,9 +944,13 @@ class BoardStore {
       void this.loadCatalog()
     }
 
+    const dateKey = this.state.dateKey
+    const seq = this.loadSeq
     try {
-      const entry = await getClient().get<BoardData>(KEYS.board(this.state.dateKey))
+      const entry = await getClient().get<BoardData>(KEYS.board(dateKey))
       if (!entry) return
+      // 请求期间切换了日期或发起了更新的读取：丢弃本次结果
+      if (seq !== this.loadSeq || dateKey !== this.state.dateKey) return
       // 请求期间用户开始编辑：放弃本次远程更新
       if (this.state.dirty || this.state.saving) return
       if (entry.updatedAt !== this.state.updatedAt) {
@@ -980,8 +967,8 @@ class BoardStore {
   }
 
   private bindChannel() {
-    if (this.channelBound) return
-    this.channelBound = true
+    if (this.bindingDone) return
+    this.bindingDone = true
     syncChannel?.addEventListener('message', (event: MessageEvent) => {
       const data = event.data as { type?: string; key?: string }
       if (data?.type !== 'change') return
@@ -993,33 +980,18 @@ class BoardStore {
     })
   }
 
-  /** 同步连接相关的设置变更后自动重建客户端 */
+  /** 刷新间隔变更后立即生效 */
   private bindSettings() {
     if (this.settingsBound) return
     this.settingsBound = true
     window.addEventListener('classworks-lite:settings', (event) => {
       const key = (event as CustomEvent<{ key?: string }>).detail?.key
-      if (!key) return
-      if (key === 'refresh.auto' || key === 'refresh.interval') {
-        this.startPolling()
-        return
-      }
-      if (key !== 'server.provider' && key !== 'server.domain' && key !== 'server.siteKey') return
-      if (key === 'server.provider') {
-        // 存储模式切换（含恢复默认）立即生效，避免界面显示本地而客户端仍连云端
-        if (this.settingsTimer) clearTimeout(this.settingsTimer)
-        this.settingsTimer = null
-        void this.reinitialize()
-        return
-      }
-      if (this.settingsTimer) clearTimeout(this.settingsTimer)
-      this.settingsTimer = setTimeout(() => {
-        void this.reinitialize()
-      }, 600)
+      if (key !== 'refresh.auto' && key !== 'refresh.interval') return
+      this.startPolling()
     })
   }
 
-  /** 访问状态变化：获得编辑权限后补存本地改动，被锁定时停止自动保存 */
+  /** 访问角色变化：只读会话停止自动保存，可写会话恢复未落盘的改动 */
   private bindAccess() {
     if (this.accessBound) return
     this.accessBound = true
@@ -1027,24 +999,23 @@ class BoardStore {
   }
 
   private handleAccessStatus = () => {
-    if (isEditLocked()) {
+    if (isReadOnly()) {
       this.flushPendingSave()
       return
     }
     if (this.state.dirty && !this.state.saving) this.scheduleSave()
   }
 
-  private handleOnline = async () => {
+  private handleOnline = () => {
     this.patch({ offline: false })
-    const flushed = await getClient().flush()
-    if (flushed > 0) {
-      toast.success('网络已恢复', `已补传 ${flushed} 条离线改动`)
-      this.patch({ pendingSync: await getClient().pendingCount() })
-      // 补传后把本地时间戳换成服务端时间戳，并刷新目录版本
-      if (!this.state.dirty && !this.state.saving) {
-        void this.loadBoard(true)
-        void this.loadCatalog()
-      }
+    // 断网期间的改动没有本地队列，恢复后立即补一次保存（仅当天，避免突然弹出历史保存确认）
+    if (this.state.dirty && !this.state.saving) {
+      if (isSameDay(this.state.date, today())) void this.save({ silent: true, auto: true })
+      return
+    }
+    if (!this.state.saving) {
+      void this.loadBoard(true)
+      void this.loadCatalog()
     }
   }
 
@@ -1052,35 +1023,29 @@ class BoardStore {
     this.patch({ offline: true })
   }
 
-  private handleSyncError = (event: Event) => {
-    const detail = (event as CustomEvent<{ message?: string }>).detail
-    toast.warning('同步冲突', detail?.message ?? '离线改动与云端版本冲突，已保留本机副本')
-    void getClient()
-      .pendingCount()
-      .then((count) => this.patch({ pendingSync: count }))
-      .catch(() => undefined)
-  }
-
   private handleVisibility = () => {
-    if (!document.hidden && getSetting<string>('server.provider') === 'cloud') {
-      void this.pollOnce()
-    }
+    if (!document.hidden) void this.pollOnce()
   }
 
-  /** 设置变更后重建客户端并重新载入 */
+  /** 重新拉取云端数据（设置页「应用并重连」与退出只读会话后使用） */
   async reinitialize(): Promise<boolean> {
     this.flushPendingSave()
     if (this.state.dirty) {
-      const ok = await this.save({ silent: true, auto: this.canAutoSave() })
-      if (!ok && this.state.dirty) {
-        toast.warning('未切换数据源', '当前改动尚未保存，请先上传或撤销')
-        return false
+      if (isReadOnly()) {
+        // 只读会话无法保存，允许丢弃后重新读取，避免页面卡在无法保存的改动上
+        this.patch({ dirty: false })
+        toast.warning('已丢弃未保存的改动', '只读会话无法上传，正在重新读取云端数据')
+      } else {
+        const ok = await this.save({ silent: true, auto: this.canAutoSave() })
+        if (!ok && this.state.dirty) {
+          toast.warning('未重新加载', '当前改动尚未保存，请先上传或撤销')
+          return false
+        }
       }
     }
-    const mode = refreshClient()
-    this.patch({ source: mode, status: 'loading', loaded: false, catalogLoaded: false })
+    this.patch({ status: 'loading', loaded: false, catalogLoaded: false })
     const [catalogOk, boardOk] = await Promise.all([this.loadCatalog(), this.loadBoard(true)])
-    if (!catalogOk) toast.warning('部分配置加载失败', '学生名单/科目/考试仍使用本地数据')
+    if (!catalogOk) toast.warning('部分配置加载失败', '学生名单/科目/考试读取失败，可稍后重试')
     return boardOk
   }
 
@@ -1089,6 +1054,11 @@ class BoardStore {
    * 不会覆盖已有内容，只在当前日期为空时生效。
    */
   async seedDemo() {
+    if (!this.state.loaded) {
+      toast.error('数据尚未加载完成', '请刷新并成功加载后再试')
+      return false
+    }
+    if (!this.ensureWritable()) return false
     const existing = Object.entries(this.state.board.homework).filter(([, item]) => item.content?.trim())
     if (existing.length > 0) {
       toast.info('已有内容', '示例数据只在空白作业板上写入')
@@ -1122,20 +1092,6 @@ class BoardStore {
     const saved = await this.save({ silent: true })
     if (saved) toast.success('已载入示例作业', '可直接编辑或清空')
     return saved
-  }
-
-  destroy() {
-    if (this.pollTimer) clearInterval(this.pollTimer)
-    if (this.saveTimer) clearTimeout(this.saveTimer)
-    if (this.settingsTimer) clearTimeout(this.settingsTimer)
-    if (typeof window !== 'undefined') {
-      window.removeEventListener('online', this.handleOnline)
-      window.removeEventListener('offline', this.handleOffline)
-      window.removeEventListener('classworks-lite:sync-error', this.handleSyncError)
-      window.removeEventListener(ACCESS_STATUS_EVENT, this.handleAccessStatus)
-      document.removeEventListener('visibilitychange', this.handleVisibility)
-    }
-    this.initialized = false
   }
 }
 

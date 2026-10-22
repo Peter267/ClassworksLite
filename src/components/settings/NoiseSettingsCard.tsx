@@ -3,6 +3,7 @@ import { MdiIcon } from '../MdiIcon'
 import { SettingsCard } from './SettingsCard'
 import { SettingItem } from './SettingItem'
 import { getClient } from '../../lib/kv'
+import { isReadOnly, notifyReadOnly } from '../../lib/access'
 import { noiseService } from '../../lib/noise'
 import { toast } from '../../lib/toast'
 
@@ -61,6 +62,10 @@ export function NoiseSettingsCard() {
   }, [])
 
   const save = async () => {
+    if (isReadOnly()) {
+      notifyReadOnly()
+      return
+    }
     const normalized = sessions.map((session) => ({
       ...session,
       name: session.name.trim() || '未命名时段',
@@ -69,7 +74,7 @@ export function NoiseSettingsCard() {
     const alertThresholdDb = Math.min(90, Math.max(30, threshold))
     setSaving(true)
     try {
-      const { entry, queued } = await getClient().set(
+      const { entry } = await getClient().set(
         'noise-session-config',
         { sessions: normalized, alertThresholdDb },
         { baseUpdatedAt: updatedAt },
@@ -78,11 +83,7 @@ export function NoiseSettingsCard() {
       setSessions(normalized)
       setThreshold(alertThresholdDb)
       noiseService.updateScheduleConfig({ sessions: normalized, alertThresholdDb })
-      if (queued) {
-        toast.warning('已保存到本机', '联网后会自动同步时段配置')
-      } else {
-        toast.success('已保存', '晚自习时段配置已生效')
-      }
+      toast.success('已保存', '晚自习时段配置已生效')
     } catch (error) {
       toast.error('保存失败', error instanceof Error ? error.message : '请稍后重试')
     } finally {

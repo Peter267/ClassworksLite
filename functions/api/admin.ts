@@ -4,7 +4,7 @@
  * 需要与 /api/kv 相同的 KV 绑定，并额外配置：
  *   ADMIN_PASSWORD  管理后台密码（必填，未配置时后台禁用）
  *   ADMIN_SECRET    可选，令牌签名密钥
- *   CORS_ORIGIN     可选，前端与 Functions 不同源时填写前端来源
+ *   CORS_ORIGIN     可选，限制允许的跨域来源（站点自身固定同源调用）
  */
 import { handleAdmin } from '../../server/admin-core'
 import { createKVBackend, type KVNamespaceLike } from '../../server/cloudflare'

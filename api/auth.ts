@@ -2,11 +2,10 @@
  * Vercel Edge Function：/api/auth
  *
  * 与 /api/kv 共用 Upstash Redis，并读取：
- *   SITE_PASSWORD  访问密码（配置后读取作业需要先登录）
- *   EDIT_TOKEN     编辑令牌（配置后写入 / 删除需要 X-Edit-Token）
- *   AUTH_SECRET    可选，访问令牌签名密钥；留空时使用 SITE_PASSWORD
- *   SITE_TOKEN     可选，旧版静态访问令牌
- *   CORS_ORIGIN    可选，前端与 API 不同源时填写前端来源
+ *   SITE_PASSWORD  只读密码（配置后查看作业需要先登录）
+ *   EDIT_PASSWORD  可写密码（同一输入框输入后获得查看与修改权限）
+ *   AUTH_SECRET    可选，访问令牌签名密钥；留空时由两个密码派生
+ *   CORS_ORIGIN    可选，限制允许的跨域来源（站点自身固定同源调用）
  */
 import { handleAccess } from '../server/auth-core'
 import { UpstashBackend } from '../server/upstash'
@@ -28,9 +27,8 @@ export default async function handler(request: Request): Promise<Response> {
   }
 
   return handleAccess(request, new UpstashBackend(url, token), {
-    sitePassword: process.env.SITE_PASSWORD,
-    editToken: process.env.EDIT_TOKEN,
-    siteToken: process.env.SITE_TOKEN,
+    viewPassword: process.env.SITE_PASSWORD,
+    editPassword: process.env.EDIT_PASSWORD,
     secret: process.env.AUTH_SECRET,
     corsOrigin: process.env.CORS_ORIGIN,
   })

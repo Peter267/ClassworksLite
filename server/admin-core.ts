@@ -131,7 +131,7 @@ async function handleLogin(
 
   await guard.reset(ip)
 
-  const { token, expiresAt } = await createToken(tokenSecret(options), TOKEN_TTL_MS)
+  const { token, expiresAt } = await createToken(tokenSecret(options), TOKEN_TTL_MS, 'admin')
   await appendAudit(backend, { actor: 'admin', action: 'login', ip, ua })
   return json({ token, expiresAt }, 200, options.corsOrigin)
 }
@@ -485,14 +485,15 @@ export async function handleAdmin(
   }
 
   const token = readToken(request)
-  const expiresAt = token ? await verifyToken(token, tokenSecret(options)) : null
-  if (!expiresAt) {
+  const payload = token ? await verifyToken(token, tokenSecret(options)) : null
+  if (!payload || payload.role !== 'admin') {
     return json(
       { error: 'unauthorized', message: '管理会话已过期，请重新登录' },
       401,
       origin,
     )
   }
+  const expiresAt = payload.expiresAt
 
   try {
     switch (action) {
