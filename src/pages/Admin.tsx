@@ -303,6 +303,17 @@ export function AdminPage({ onBack }: { onBack: () => void }) {
     else void loadLogs()
   }
 
+  /** 切换分区时回到顶部：概览与数据的文档高度差异很大，沿用上一屏的滚动位置会突然跳一下 */
+  function selectTab(next: Tab) {
+    if (next === tab) return
+    setTab(next)
+    const root = document.documentElement
+    const previous = root.style.scrollBehavior
+    root.style.scrollBehavior = 'auto'
+    window.scrollTo(0, 0)
+    root.style.scrollBehavior = previous
+  }
+
   async function openEditor(row: AdminKeyInfo) {
     if (!token) return
     setOpeningKey(row.key)
@@ -587,7 +598,7 @@ export function AdminPage({ onBack }: { onBack: () => void }) {
                 type="button"
                 className={`admin-tab ${tab === item.key ? 'active' : ''}`}
                 aria-current={tab === item.key ? 'page' : undefined}
-                onClick={() => setTab(item.key)}
+                onClick={() => selectTab(item.key)}
               >
                 <MdiIcon name={item.icon} size={18} />
                 {item.label}
@@ -663,7 +674,7 @@ export function AdminPage({ onBack }: { onBack: () => void }) {
                     <button
                       type="button"
                       className="v-btn v-btn--size-small v-btn--variant-text"
-                      onClick={() => setTab('logs')}
+                      onClick={() => selectTab('logs')}
                     >
                       全部日志
                       <MdiIcon name="chevron-right" size={16} />
