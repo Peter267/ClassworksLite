@@ -6,7 +6,7 @@
  *  - 字体（含 MDI 图标字体）也缓存，保证离线时图标不缺失
  */
 
-const VERSION = 'v4'
+const VERSION = 'v5'
 const CACHE_PREFIX = 'classworks-'
 const SHELL_CACHE = `${CACHE_PREFIX}shell-${VERSION}`
 const ASSET_CACHE = `${CACHE_PREFIX}assets-${VERSION}`
