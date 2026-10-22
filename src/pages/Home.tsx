@@ -216,27 +216,44 @@ export function Home({
   }, [state.status, openSubject])
 
   /* ---------------- 内容变化高亮 ---------------- */
-  const previousHomework = useRef('')
+  /**
+   * 只在「同一日期、已加载完成 → 已加载完成」的两次数据之间比较。
+   * 首次加载（空板 → 全量数据）与切换日期（A 日 → B 日）都只建立新基线，
+   * 否则每张卡片都会被判定为“内容变化”而闪蓝光。
+   */
+  const baseline = useRef<{ dateKey: string; snapshot: string } | null>(null)
   useEffect(() => {
-    const snapshot = JSON.stringify(state.board.homework)
-    const previousRaw = previousHomework.current
-    previousHomework.current = snapshot
-    if (!previousRaw || previousRaw === snapshot || state.dirty) return
+    const ready = state.status === 'ready' && state.loaded
+    if (!ready) {
+      baseline.current = null
+      return
+    }
 
-    const previous = JSON.parse(previousRaw) as Record<string, { content?: string }>
+    const snapshot = JSON.stringify(state.board.homework)
+    const previous = baseline.current
+    baseline.current = { dateKey: state.dateKey, snapshot }
+    if (!previous || previous.dateKey !== state.dateKey) return
+    if (previous.snapshot === snapshot || state.dirty) return
+
+    const previousHomework = JSON.parse(previous.snapshot) as Record<string, { content?: string }>
     const changed: Record<string, boolean> = {}
     for (const [key, item] of Object.entries(state.board.homework)) {
-      if ((previous[key]?.content ?? '') !== (item.content ?? '')) changed[key] = true
+      if ((previousHomework[key]?.content ?? '') !== (item.content ?? '')) changed[key] = true
     }
-    for (const key of Object.keys(previous)) {
+    for (const key of Object.keys(previousHomework)) {
       if (!(key in state.board.homework)) changed[key] = true
     }
     if (Object.keys(changed).length === 0) return
 
     setHighlight(changed)
+  }, [state.board.homework, state.dirty, state.status, state.loaded, state.dateKey])
+
+  /* 高亮自动消退：独立计时，避免被数据刷新打断后永久残留 */
+  useEffect(() => {
+    if (Object.keys(highlight).length === 0) return
     const timer = window.setTimeout(() => setHighlight({}), 6000)
     return () => window.clearTimeout(timer)
-  }, [state.board.homework, state.dirty])
+  }, [highlight])
 
   const openUaf = (mode: 'export' | 'import') => {
     setUafMode(mode)
