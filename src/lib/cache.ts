@@ -22,7 +22,7 @@ export interface RawRecord {
 
 /** 本地存储不可写（配额耗尽或存储被禁用） */
 export class StorageWriteError extends Error {
-  constructor(message = '本地存储不可写') {
+  constructor(message = '本机存储不可写') {
     super(message)
     this.name = 'StorageWriteError'
   }
@@ -73,7 +73,7 @@ export async function cacheGet(key: string): Promise<RawRecord | undefined> {
 
 export async function cacheSet(record: RawRecord): Promise<void> {
   const store = storage()
-  if (!store) throw new StorageWriteError('浏览器本地存储不可用，改动无法落盘')
+  if (!store) throw new StorageWriteError('浏览器存储不可用，改动未能保存')
 
   const payload = JSON.stringify(record)
   try {
@@ -91,7 +91,7 @@ export async function cacheSet(record: RawRecord): Promise<void> {
     try {
       store.setItem(PREFIX + record.key, payload)
     } catch {
-      throw new StorageWriteError('本地存储空间不足，改动无法落盘')
+      throw new StorageWriteError('设备存储空间不足，改动未能保存')
     }
   }
 }

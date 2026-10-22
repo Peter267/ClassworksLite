@@ -24,11 +24,11 @@ export function AccessSettingsCard() {
     try {
       const next = await refreshAccessStatus()
       if (!next) {
-        toast.error('检测失败', '无法连接 /api/auth，请检查服务器域名与网络')
+        toast.error('检测失败', '无法连接站点，请检查站点地址与网络')
         return
       }
       if (next.unsupported) {
-        toast.warning('后端未启用访问控制', '当前服务端没有 /api/auth 接口，升级后重新部署即可启用')
+        toast.warning('站点未启用访问控制', '当前站点暂不支持访问密码，请联系管理员')
         return
       }
       if (next.passwordRequired && !next.authenticated) {
@@ -36,12 +36,12 @@ export function AccessSettingsCard() {
         return
       }
       if (next.editRequired && !next.editAuthenticated) {
-        toast.warning('编辑令牌无效', '请核对服务端 EDIT_TOKEN 后重试')
+        toast.warning('编辑令牌无效', '请核对编辑令牌后重试')
         return
       }
       toast.success(
         '权限已更新',
-        next.editRequired ? '已获得编辑权限' : '当前服务端未启用编辑令牌',
+        next.editRequired ? '已获得编辑权限' : '当前站点未启用编辑令牌',
       )
     } finally {
       setChecking(false)
@@ -60,7 +60,7 @@ export function AccessSettingsCard() {
   }
 
   const viewText = !cloud
-    ? '仅服务器模式生效'
+    ? '仅在线模式生效'
     : !status
       ? '正在检测…'
       : status.unsupported
@@ -74,7 +74,7 @@ export function AccessSettingsCard() {
             : '需要网站令牌'
 
   const editText = !cloud
-    ? '仅服务器模式生效'
+    ? '仅在线模式生效'
     : !status
       ? '正在检测…'
       : status.unsupported
@@ -99,14 +99,14 @@ export function AccessSettingsCard() {
       {!cloud && (
         <div className="v-alert v-alert--variant-tonal rounded-lg mb-3" data-color="info">
           <MdiIcon name="information" size={20} />
-          <div>当前为本地数据库模式，访问密码与编辑令牌只对服务器模式生效。</div>
+          <div>当前为本机模式，访问密码与编辑令牌仅在线模式生效。</div>
         </div>
       )}
 
       {cloud && status?.unsupported && (
         <div className="v-alert v-alert--variant-tonal rounded-lg mb-3" data-color="warning">
           <MdiIcon name="alert-circle-outline" size={20} />
-          <div>当前服务端没有 /api/auth 接口，可能仍是旧版本；升级部署后即可使用访问密码。</div>
+          <div>当前站点暂不支持访问密码，可能版本较旧；请联系管理员升级后使用。</div>
         </div>
       )}
 
@@ -130,7 +130,7 @@ export function AccessSettingsCard() {
       <div className="v-list mt-3">
         <SettingItem
           settingKey="server.editToken"
-          description="填写与服务端 EDIT_TOKEN 相同的值，保存修改时会自动携带；修改后会自动校验。"
+          description="需与站点设置的编辑令牌一致，保存修改时会自动携带；修改后会自动校验。"
         />
       </div>
 

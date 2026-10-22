@@ -451,7 +451,7 @@ export async function handleAdmin(
     return json(
       {
         error: 'admin_not_configured',
-        message: '服务端未配置 ADMIN_PASSWORD，管理后台不可用',
+        message: '管理后台未启用，请联系管理员',
       },
       503,
       origin,

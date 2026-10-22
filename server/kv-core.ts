@@ -207,7 +207,7 @@ export async function handleKV(
         message:
           lockMinutes > 0
             ? `编辑令牌错误次数过多，请 ${lockMinutes} 分钟后再试`
-            : '需要有效的编辑令牌才能修改作业',
+            : '需要编辑令牌才能修改作业',
       },
       lockMinutes > 0 ? 429 : 403,
       origin,
@@ -283,7 +283,7 @@ export async function handleKV(
       if ('baseUpdatedAt' in body) {
         const base = body.baseUpdatedAt
         if (base !== null && typeof base !== 'number') {
-          return json({ error: 'bad_request', message: 'baseUpdatedAt 非法' }, 400, origin)
+          return json({ error: 'bad_request', message: '数据版本信息非法' }, 400, origin)
         }
         const existing = await backend.read(body.key)
         if (existing === null) {

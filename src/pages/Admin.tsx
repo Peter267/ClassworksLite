@@ -12,7 +12,6 @@ import {
   type AdminStats,
 } from '../lib/admin'
 import { relativeTime } from '../lib/date'
-import { getSetting } from '../lib/settings'
 import { toast } from '../lib/toast'
 
 type Tab = 'overview' | 'data' | 'logs'
@@ -84,17 +83,11 @@ function formatTime(ts?: number): string {
 function errorMessage(err: unknown): string {
   if (err instanceof AdminError) {
     if (err.code === 'admin_not_configured') {
-      return '服务端未配置 ADMIN_PASSWORD，管理后台不可用'
+      return '管理后台未启用，请联系管理员'
     }
     return err.message
   }
   return err instanceof Error ? err.message : '未知错误'
-}
-
-function endpointLabel(): string {
-  const configured = getSetting('server.domain').trim()
-  if (configured) return configured.replace(/\/+$/, '')
-  return typeof window === 'undefined' ? '' : window.location.origin
 }
 
 function StatCard({
@@ -470,7 +463,6 @@ export function AdminPage({ onBack }: { onBack: () => void }) {
 
   const recentLogs = (logs ?? []).slice(0, 6)
   const maxGroupBytes = Math.max(1, ...(stats?.groups.map((item) => item.bytes) ?? [0]))
-  const endpoint = endpointLabel()
   const heading = TAB_HEADINGS[tab]
 
   if (phase !== 'ready') {
@@ -496,7 +488,7 @@ export function AdminPage({ onBack }: { onBack: () => void }) {
               </span>
               <h1 className="text-h5">管理后台</h1>
               <p className="text-body-2 text-medium-emphasis mt-2">
-                使用部署时配置的 <code>ADMIN_PASSWORD</code> 登录，管理全站数据与操作日志。
+                输入管理密码即可管理全站数据与操作日志。
               </p>
 
               <label className="block mt-6">
@@ -529,8 +521,6 @@ export function AdminPage({ onBack }: { onBack: () => void }) {
               </button>
 
               <div className="admin-login-foot">
-                管理接口：<code>{endpoint}/api/admin</code>
-                <br />
                 连续 5 次密码错误会锁定当前 IP 10 分钟；关闭标签页即退出登录。
               </div>
             </form>
@@ -587,13 +577,6 @@ export function AdminPage({ onBack }: { onBack: () => void }) {
                 <MdiIcon name="shield-check" size={14} />
                 已登录
               </span>
-              <span
-                className="v-chip v-chip--size-small v-chip--variant-outlined admin-endpoint-chip"
-                title={endpoint}
-              >
-                <MdiIcon name="web" size={14} />
-                <span className="admin-endpoint-text">{endpoint}</span>
-              </span>
             </div>
           </header>
 
@@ -625,7 +608,7 @@ export function AdminPage({ onBack }: { onBack: () => void }) {
                   icon="counter"
                   label="占用空间"
                   value={stats ? formatBytes(stats.totalBytes) : '—'}
-                  hint="KV 原始 JSON 大小"
+                  hint="原始数据大小"
                 />
                 <StatCard
                   icon="clock-outline"
@@ -725,14 +708,10 @@ export function AdminPage({ onBack }: { onBack: () => void }) {
               <section className="v-card admin-card">
                 <div className="admin-card-head">
                   <h2 className="text-subtitle-1 font-weight-medium">系统信息</h2>
-                  <span className="text-caption text-medium-emphasis">管理接口与会话</span>
+                  <span className="text-caption text-medium-emphasis">服务与会话</span>
                 </div>
                 <div className="admin-card-body">
                   <div className="admin-info-grid">
-                    <div>
-                      <div className="admin-info-label">管理接口</div>
-                      <div className="admin-info-value font-monospace">{endpoint}/api/admin</div>
-                    </div>
                     <div>
                       <div className="admin-info-label">日志保留</div>
                       <div className="admin-info-value">最近 {logLimit} 条</div>
@@ -744,7 +723,7 @@ export function AdminPage({ onBack }: { onBack: () => void }) {
                     <div>
                       <div className="admin-info-label">安全提示</div>
                       <div className="admin-info-value">
-                        请在部署平台设置强密码，不要使用示例值
+                        请为管理后台设置强密码，且不要使用示例值
                       </div>
                     </div>
                   </div>
@@ -833,7 +812,7 @@ export function AdminPage({ onBack }: { onBack: () => void }) {
                 <div className="v-alert v-alert--variant-tonal mb-3" data-color="warning">
                   <MdiIcon name="alert-circle-outline" size={20} />
                   <div>
-                    数据键超过服务端单次读取上限，当前列表/备份不完整。请先清理或分批导出。
+                    数据量超过单次读取上限，当前列表/备份不完整。请先清理或分批导出。
                   </div>
                 </div>
               )}
@@ -1035,7 +1014,7 @@ export function AdminPage({ onBack }: { onBack: () => void }) {
         subtitle={
           editor?.mode === 'edit'
             ? `${GROUP_LABELS[editor.group ?? 'other'] ?? '其他'} · ${formatBytes(editor.size ?? 0)} · 更新于 ${formatTime(editor.baseUpdatedAt)}`
-            : '数据会以 { "v": ..., "t": ... } 的标准记录写入 KV'
+            : '新记录包含数据内容与更新时间'
         }
         width={760}
         fullscreenOnMobile

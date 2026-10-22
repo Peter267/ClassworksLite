@@ -332,7 +332,7 @@ export function UafTransferDialog({
 
   const footerText = (() => {
     if (mode === 'export') return `文件日期：${exportDate || '未选择'}`
-    if (!importPlan) return '仅支持内嵌 uaf_payload.csv 的 UAF PDF'
+    if (!importPlan) return '仅支持由本工具导出的 UAF PDF'
     const active = importPlan.rows.filter((row) => row.action !== 'keep').length
     return `将导入 ${active} 项，保留 ${importPlan.rows.length - active} 项`
   })()

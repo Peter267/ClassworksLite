@@ -174,7 +174,7 @@ async function handleLogin(
 ): Promise<Response> {
   if (!options.sitePassword) {
     return json(
-      { error: 'not_configured', message: '服务端未启用访问密码' },
+      { error: 'not_configured', message: '本站未启用访问密码' },
       400,
       options.corsOrigin,
     )

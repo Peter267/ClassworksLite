@@ -1,7 +1,7 @@
 {
   "name": "ClassworksLite 作业板",
   "short_name": "ClassworksLite",
-  "description": "ClassworksLite —— 适用于班级大屏的作业板，支持离线与 Serverless 云同步",
+  "description": "ClassworksLite —— 适用于班级大屏的作业板，支持离线使用与多设备同步",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

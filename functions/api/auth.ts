@@ -28,7 +28,7 @@ export async function onRequest(context: {
 
   if (!env.KV) {
     return new Response(
-      JSON.stringify({ error: 'kv_not_bound', message: '未绑定 KV 命名空间，请检查 Pages 配置' }),
+      JSON.stringify({ error: 'kv_not_bound', message: '服务暂不可用，请联系管理员' }),
       { status: 500, headers: { 'Content-Type': 'application/json; charset=utf-8' } },
     )
   }

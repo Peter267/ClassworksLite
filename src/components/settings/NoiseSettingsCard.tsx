@@ -79,7 +79,7 @@ export function NoiseSettingsCard() {
       setThreshold(alertThresholdDb)
       noiseService.updateScheduleConfig({ sessions: normalized, alertThresholdDb })
       if (queued) {
-        toast.warning('已保存到本地', '联网后会自动同步时段配置')
+        toast.warning('已保存到本机', '联网后会自动同步时段配置')
       } else {
         toast.success('已保存', '晚自习时段配置已生效')
       }

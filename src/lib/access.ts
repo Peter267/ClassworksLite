@@ -147,9 +147,9 @@ async function request(path: string, init: RequestInit = {}): Promise<Response> 
     })
   } catch (err) {
     if (err instanceof DOMException && err.name === 'AbortError') {
-      throw new AccessError(0, 'timeout', '请求超时，请检查网络与后端服务')
+      throw new AccessError(0, 'timeout', '请求超时，请检查网络')
     }
-    throw new AccessError(0, 'network_error', '无法连接服务器，请检查网络与后端部署')
+    throw new AccessError(0, 'network_error', '无法连接服务，请检查网络')
   } finally {
     clearTimeout(timer)
   }
@@ -228,7 +228,7 @@ export async function loginWithPassword(password: string): Promise<AccessStatus>
 
   const data = (await response.json()) as { token?: unknown; expiresAt?: unknown }
   if (typeof data.token !== 'string' || typeof data.expiresAt !== 'number') {
-    throw new AccessError(500, 'bad_response', '服务端返回的访问令牌无效')
+    throw new AccessError(500, 'bad_response', '登录状态异常，请刷新页面重试')
   }
 
   setAccessToken(data.token, data.expiresAt)

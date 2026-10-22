@@ -462,7 +462,7 @@ export class CloudClient implements KVClient {
                 rebased = true
                 notifySyncError(
                   record.key,
-                  '检测到云端更新，正在用本地离线改动覆盖云端版本',
+                  '检测到云端更新，正在用本机改动覆盖云端版本',
                 )
                 continue
               }
@@ -470,7 +470,7 @@ export class CloudClient implements KVClient {
                 // 服务端对“期望存在但已被删除”的键返回不带 updatedAt 的 409：按新建重试
                 baseUpdatedAt = null
                 rebased = true
-                notifySyncError(record.key, '云端记录已删除，正在用本地内容重新创建')
+                notifySyncError(record.key, '云端记录已删除，正在用当前内容重新创建')
                 continue
               }
             }

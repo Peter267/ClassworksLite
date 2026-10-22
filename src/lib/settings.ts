@@ -181,7 +181,7 @@ export const SETTING_DEFS: Record<string, SettingDef> = {
   'hitokoto.online': {
     type: 'boolean',
     default: true,
-    label: '从一言接口在线获取',
+    label: '在线获取一言句子',
     group: 'hitokoto',
   },
   'hitokoto.refreshInterval': {
@@ -365,21 +365,21 @@ export const SETTING_DEFS: Record<string, SettingDef> = {
     label: '数据提供者',
     group: 'server',
     options: [
-      { value: 'local', label: '本地数据库' },
-      { value: 'cloud', label: '服务器' },
+      { value: 'local', label: '本机模式' },
+      { value: 'cloud', label: '在线模式' },
     ],
   },
   'server.domain': {
     type: 'string',
     default: '',
-    label: '后端服务器域名',
+    label: '站点地址',
     group: 'server',
   },
   'server.siteKey': {
     type: 'string',
     default: '',
     label: '网站令牌',
-    hint: '服务端使用旧版 SITE_TOKEN 时填写；启用访问密码后由登录自动获取，无需再填。',
+    hint: '旧版站点需要填写网站令牌；启用访问密码后由登录自动获取，无需再填。',
     group: 'server',
     secret: true,
   },
@@ -387,7 +387,7 @@ export const SETTING_DEFS: Record<string, SettingDef> = {
     type: 'string',
     default: '',
     label: '编辑令牌',
-    hint: '服务端配置了 EDIT_TOKEN 时必须填写同值才能修改作业；服务端未配置时写操作默认开放。',
+    hint: '站点设置了编辑令牌时，需填写相同值才能修改作业；未设置时默认允许修改。',
     group: 'server',
     secret: true,
   },

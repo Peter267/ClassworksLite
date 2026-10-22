@@ -294,7 +294,7 @@ export function Home({
             {state.offline && (
               <div className="v-alert v-alert--variant-tonal mb-4" data-color="warning">
                 <Icon name="cloudOff" size={18} />
-                当前展示的是本地缓存，网络恢复后会自动拉取最新数据。
+                当前展示的是本机保存的内容，网络恢复后会自动拉取最新数据。
               </div>
             )}
 

@@ -184,35 +184,22 @@ export function SettingsPage({
                     <a href="https://github.com/Moonrend/Classworks" target="_blank" rel="noreferrer">
                       Classworks
                     </a>{' '}
-                    二次开发的开源作业板。界面文案、Material 3 视觉与数据键名与上游保持一致，
-                    后端改为单个 KV 函数，可直接部署到 Cloudflare Pages、Cloudflare Workers 或 Vercel。
+                    二次开发的开源作业板：界面与数据格式和上游保持一致，作业可在多台设备之间同步。
                   </p>
                   <div className="d-flex flex-column" style={{ gap: 6 }}>
+                    <div>· 功能：作业板、出勤统计、考试安排、随机点名、UAF 导入导出、环境噪音监测</div>
+                    <div>· 数据兼容：可直接读取上游版本保存的数据</div>
                     <div>· 上游：Classworks（AGPL-3.0，作者 SunWuyuan / ZeroCat 社区）</div>
-                    <div>· 本版本：React 19 + Vite + 单函数 KV，新增 UAF 导入导出、环境噪音监测与密码保护的管理后台</div>
-                    <div>· 数据兼容：沿用 <code>classworks-data-YYYYMMDD</code> 等键名，可直接读取上游数据</div>
-                    <div>· 项目说明与部署方式见仓库根目录的 README.md 与 NOTICE.md</div>
-                  </div>
-                </div>
-              </SettingsCard>
-
-              <SettingsCard title="二次开发说明" icon="developer-board" className="rounded-xl">
-                <div className="text-body-2">
-                  <p className="mb-3">
-                    ClassworksLite 以二次开发为目标组织代码，修改时按下面的入口定位：
-                  </p>
-                  <div className="d-flex flex-column" style={{ gap: 6 }}>
-                    <div>· 页面与组件：<code>src/pages</code>、<code>src/components</code></div>
-                    <div>· 设置项：<code>src/lib/settings.ts</code>（键名、默认值、分组、标题）</div>
-                    <div>· 主题与组件样式：<code>src/index.css</code>（<code>--v-theme-*</code> 令牌）</div>
-                    <div>· 数据与同步：<code>src/lib/store.ts</code>、<code>src/lib/kv.ts</code></div>
-                    <div>· 服务端：<code>server/kv-core.ts</code> 与 <code>functions</code> / <code>worker</code> / <code>api</code> 适配器</div>
-                    <div>· 管理后台：<code>src/pages/Admin.tsx</code>、<code>server/admin-core.ts</code>（环境变量 <code>ADMIN_PASSWORD</code>）</div>
-                    <div>· UAF：<code>src/lib/uafExport.ts</code>；噪音：<code>src/lib/noise.ts</code></div>
+                    <div>
+                      · 本项目源码：
+                      <a href="https://github.com/Peter267/ClassworksLite" target="_blank" rel="noreferrer">
+                        github.com/Peter267/ClassworksLite
+                      </a>
+                    </div>
                   </div>
                   <p className="mt-3 mb-2">
-                    品牌名称统一写作 <b>ClassworksLite</b>（站点标题、PWA manifest、README、NOTICE）。
-                    对外分发修改版时，请保留 <code>LICENSE</code> 与 <code>NOTICE.md</code>，并按 AGPL-3.0 提供对应源码。
+                    品牌名称统一写作 <b>ClassworksLite</b>。本项目以 AGPL-3.0 发布，
+                    分发修改版时请保留许可证与来源声明。
                   </p>
                   <div className="d-flex flex-wrap" style={{ gap: 8 }}>
                     <a
@@ -225,9 +212,17 @@ export function SettingsPage({
                       上游仓库
                       <MdiIcon name="open-in-new" size={18} />
                     </a>
+                    <a
+                      className="v-btn v-btn--size-small v-btn--variant-tonal"
+                      href="https://github.com/Peter267/ClassworksLite"
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      本项目仓库
+                      <MdiIcon name="open-in-new" size={18} />
+                    </a>
                     <span className="v-chip v-chip--size-small v-chip--variant-tonal">AGPL-3.0</span>
-                    <span className="v-chip v-chip--size-small v-chip--variant-tonal">React 19</span>
-                    <span className="v-chip v-chip--size-small v-chip--variant-tonal">Serverless KV</span>
+                    <span className="v-chip v-chip--size-small v-chip--variant-tonal">开源免费</span>
                   </div>
                 </div>
               </SettingsCard>
@@ -269,10 +264,10 @@ export function SettingsPage({
 
           {active === 'server' && (
             <>
-              <SettingsCard title="连接状态" icon="cloud" subtitle="云端模式会把作业数据写入部署好的 /api/kv 接口">
+              <SettingsCard title="连接状态" icon="cloud" subtitle="云端模式下，作业数据会同步到班级共享站点">
                 <div className="grid grid-cols-2 sm:grid-cols-4" style={{ gap: 12 }}>
                   {[
-                    { label: '存储模式', value: provider === 'cloud' ? '服务器' : '本地数据库' },
+                    { label: '存储模式', value: provider === 'cloud' ? '在线模式' : '本机模式' },
                     {
                       label: '同步状态',
                       value: state.saving
@@ -280,10 +275,10 @@ export function SettingsPage({
                         : state.dirty
                           ? '待上传'
                           : state.offline
-                            ? '离线缓存'
+                            ? '离线保存'
                             : '已同步',
                     },
-                    { label: '待补传', value: `${state.pendingSync} 条` },
+                    { label: '待同步', value: `${state.pendingSync} 条` },
                     {
                       label: '最后更新',
                       value: state.updatedAt ? relativeTime(state.updatedAt) : '—',
@@ -334,7 +329,7 @@ export function SettingsPage({
               <SettingsCard
                 title="管理后台"
                 icon="shield-key"
-                subtitle="查看全站数据、操作日志并导出备份，需要服务端配置 ADMIN_PASSWORD"
+                subtitle="查看全站数据、操作日志并导出备份，需要管理密码"
               >
                 <div className="d-flex flex-wrap" style={{ gap: 8 }}>
                   <button
@@ -501,20 +496,20 @@ export function SettingsPage({
                         /* ignore */
                       }
                       const message = local
-                        ? '当前是本地数据库模式，清除后所有本地作业数据都会丢失，确定继续吗？'
+                        ? '当前为本机模式，清除后本机保存的所有作业都会丢失，确定继续吗？'
                         : pending > 0
                           ? `当前有 ${pending} 条尚未同步的离线改动，清除后也会丢失。确定继续吗？`
-                          : '清除本地缓存后需要重新从云端拉取数据，确定继续吗？'
+                          : '清除本机数据后需要重新从云端拉取数据，确定继续吗？'
                       if (!window.confirm(message)) return
                       await cacheClear()
                       toast.success(
-                        '已清除本地缓存',
-                        local ? '本地数据已清空' : '云端数据不受影响，刷新后会重新拉取',
+                        '已清除本机数据',
+                        local ? '本机数据已清空' : '云端数据不受影响，刷新后会重新拉取',
                       )
                       window.setTimeout(() => window.location.reload(), 900)
                     }}
                   >
-                    清除本地缓存
+                    清除本机数据
                   </button>
                 </div>
               </SettingsCard>
@@ -534,20 +529,15 @@ export function SettingsPage({
             <SettingsCard title="关于" icon="information" className="rounded-xl">
               <div className="text-body-2">
                 <p className="mb-3">
-                  本项目是{' '}
-                  <a href="https://github.com/Moonrend/Classworks" target="_blank" rel="noreferrer">
-                    Classworks
-                  </a>{' '}
-                  的 Serverless 重写版本：保留作业板、出勤、考试、随机点名、UAF 导入导出与环境噪音监测等核心交互，
-                  把原先需要常驻 Express + PostgreSQL + Socket.IO 的后端换成静态前端加上单个 KV 函数，
-                  可直接部署到 Cloudflare Pages、Vercel 或任意静态托管。
+                  ClassworksLite 是 Classworks 的开源重写版本：保留作业板、出勤统计、考试安排、随机点名、
+                  UAF 导入导出与环境噪音监测等核心功能，作业数据可离线使用，并在多台设备之间保持同步。
                 </p>
                 <div className="grid sm:grid-cols-2" style={{ gap: 8 }}>
                   {[
-                    ['数据存储', provider === 'cloud' ? 'Serverless KV' : 'localStorage（本地）'],
-                    ['离线能力', 'PWA 缓存 + 离线写入队列'],
-                    ['多端同步', 'BroadcastChannel + 增量轮询'],
-                    ['依赖', '零后端依赖，单函数即可上线'],
+                    ['数据存储', provider === 'cloud' ? '云端同步' : '仅本机保存'],
+                    ['离线能力', '离线可用，联网后自动同步'],
+                    ['多端同步', '多设备实时同步'],
+                    ['许可', 'AGPL-3.0 开源'],
                   ].map(([label, value]) => (
                     <div key={label} className="rounded-lg px-3 py-2" style={{ background: 'rgba(var(--v-theme-surface-variant), 0.2)' }}>
                       <div className="text-caption text-medium-emphasis">{label}</div>
@@ -591,7 +581,7 @@ export function SettingsPage({
         }
       >
         <p className="text-body-2">
-          所有设置项将回到初始值（包括服务器地址、站点令牌与编辑令牌），并切回本地数据库模式；
+          所有设置项将回到初始值（包括站点地址与各类访问令牌），并切回本机模式；
           作业数据、学生名单与科目本身不会被删除。
         </p>
       </Modal>

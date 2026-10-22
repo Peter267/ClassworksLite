@@ -18,7 +18,7 @@ export function AccessGate({ onUnlocked }: { onUnlocked: () => void }) {
       setPassword('')
       onUnlocked()
     } catch (err) {
-      setError(err instanceof Error ? err.message : '无法连接服务器，请稍后重试')
+      setError(err instanceof Error ? err.message : '无法连接服务，请稍后重试')
     } finally {
       setBusy(false)
     }
@@ -32,8 +32,8 @@ export function AccessGate({ onUnlocked }: { onUnlocked: () => void }) {
         </span>
         <h1 className="text-h5">需要访问密码</h1>
         <p className="text-body-2 text-medium-emphasis mt-2">
-          输入班级访问密码后查看作业。若服务端启用了编辑令牌，修改作业还需要在
-          「设置 → 服务器 → 访问权限」中填写同值。
+          输入班级访问密码后查看作业。若站点启用了编辑令牌，修改作业还需要在
+          「设置 → 服务器 → 访问权限」中填写相同值。
         </p>
 
         <label className="block mt-6">
@@ -64,10 +64,6 @@ export function AccessGate({ onUnlocked }: { onUnlocked: () => void }) {
         >
           {busy ? '验证中…' : '进入作业板'}
         </button>
-
-        <div className="access-gate-foot">
-          访问状态会保留 7 天；连续 5 次密码错误会锁定当前 IP 10 分钟。
-        </div>
       </form>
     </div>
   )

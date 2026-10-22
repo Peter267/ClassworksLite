@@ -323,7 +323,7 @@ class BoardStore {
     const [boardOk, catalogOk] = await Promise.all([this.loadBoard(true), this.loadCatalog()])
     if (!boardOk) {
       if (this.state.dirty) {
-        toast.warning('已保留当前编辑', '刷新期间产生了新的改动，未应用远程数据')
+        toast.warning('已保留当前编辑', '刷新期间产生了新的改动，未应用线上数据')
       } else {
         toast.error('刷新失败', this.state.error ?? '无法读取当前作业板')
       }
@@ -611,14 +611,14 @@ class BoardStore {
               if (typeof err.updatedAt === 'number') {
                 base = err.updatedAt
                 this.patch({ updatedAt: base })
-                toast.warning('检测到其他设备修改', '正在用当前本地内容覆盖云端版本')
+                toast.warning('检测到其他设备修改', '正在用当前内容覆盖云端版本')
                 continue
               }
               if (base !== null) {
                 // 期望存在但服务端已删除：按新建重试
                 base = null
                 this.patch({ updatedAt: null })
-                toast.warning('云端记录已删除', '正在用当前本地内容重新创建')
+                toast.warning('云端记录已删除', '正在用当前内容重新创建')
                 continue
               }
             }
@@ -641,7 +641,7 @@ class BoardStore {
       if (changedWhileSaving) this.scheduleSave()
       broadcastChange(key)
       if (queued) {
-        toast.warning('已保存到本地', '网络恢复后会自动同步到云端')
+        toast.warning('已保存到本机', '网络恢复后会自动同步到云端')
       } else if (!opts.silent) {
         toast.success('保存成功', '已同步作业数据')
       }
@@ -649,7 +649,7 @@ class BoardStore {
     } catch (err) {
       this.patch({ saving: false })
       if (err instanceof ConflictError) {
-        toast.warning('保存冲突', '数据已被其他设备修改，已保留本地改动；请刷新后再处理')
+        toast.warning('保存冲突', '数据已被其他设备修改，已保留本机改动；请刷新后再处理')
       } else if (err instanceof SaveError) {
         toast.error('保存被拒绝', err.message)
       } else {
@@ -740,7 +740,7 @@ class BoardStore {
     } catch {
       /* ignore */
     }
-    if (saved.queued) toast.warning('已保存到本地', '学生名单将在联网后同步')
+    if (saved.queued) toast.warning('已保存到本机', '学生名单将在联网后同步')
     return true
   }
 
@@ -771,7 +771,7 @@ class BoardStore {
 
     this.patch({ subjects: clean })
     broadcastChange(KEYS.subjects)
-    if (saved.queued) toast.warning('已保存到本地', '科目表将在联网后同步')
+    if (saved.queued) toast.warning('已保存到本机', '科目表将在联网后同步')
 
     // 改名后迁移历史作业键，否则旧作业会留在孤立键里（D7）
     let renamed = 0
@@ -802,7 +802,7 @@ class BoardStore {
       return 0
     }
     if (listed.stale) {
-      toast.warning('正在使用本地缓存迁移', '联网后请再次执行改名以补齐未缓存的历史日期')
+      toast.warning('正在使用本机数据迁移', '联网后请再次执行改名以补齐未缓存的历史日期')
     }
 
     // 当前日期先改内存，界面立即正确
@@ -1054,7 +1054,7 @@ class BoardStore {
 
   private handleSyncError = (event: Event) => {
     const detail = (event as CustomEvent<{ message?: string }>).detail
-    toast.warning('同步冲突', detail?.message ?? '离线改动与云端版本冲突，已保留本地副本')
+    toast.warning('同步冲突', detail?.message ?? '离线改动与云端版本冲突，已保留本机副本')
     void getClient()
       .pendingCount()
       .then((count) => this.patch({ pendingSync: count }))
