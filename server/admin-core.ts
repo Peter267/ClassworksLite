@@ -25,6 +25,12 @@ const MAX_LOGIN_BODY_BYTES = 16 * 1024
 const MAX_VALUE_BYTES = 1_000_000
 const MAX_KEYS = 1000
 const MAX_BACKUP_BYTES = 8 * 1024 * 1024
+const MAX_IMPORT_RECORDS = 200
+const MAX_GET_MANY_KEYS = 200
+const MAX_GET_MANY_BYTES = 4 * 1024 * 1024
+const MAX_EXPORT_PAGE = 300
+const MAX_EXPORT_PAGE_BYTES = 2 * 1024 * 1024
+const MAX_EXPORT_KEYS = 50_000
 const GUARD_KEY = '__admin-guard'
 const RESERVED_PREFIX = '__'
 
@@ -177,18 +183,14 @@ function groupOf(key: string): { id: string; label: string } {
   return { id: 'other', label: '其他' }
 }
 
-async function collectRecords(
-  backend: Backend,
-): Promise<{ records: KeyRecord[]; truncated: boolean }> {
-  const names = (await backend.scan(''))
-    .filter((name) => !name.startsWith(RESERVED_PREFIX))
-    .sort()
-  const truncated = names.length > MAX_KEYS
-  const selected = names.slice(0, MAX_KEYS)
-  const records: KeyRecord[] = []
+async function collectRecordNames(backend: Backend): Promise<string[]> {
+  return (await backend.scan('')).filter((name) => !name.startsWith(RESERVED_PREFIX)).sort()
+}
 
-  for (let index = 0; index < selected.length; index += 25) {
-    const batch = selected.slice(index, index + 25)
+async function readKeyRecords(backend: Backend, names: string[]): Promise<KeyRecord[]> {
+  const records: KeyRecord[] = []
+  for (let index = 0; index < names.length; index += 25) {
+    const batch = names.slice(index, index + 25)
     const items = await Promise.all(
       batch.map(async (key) => {
         const raw = await backend.read(key)
@@ -199,7 +201,15 @@ async function collectRecords(
     )
     for (const item of items) if (item) records.push(item)
   }
+  return records
+}
 
+async function collectRecords(
+  backend: Backend,
+): Promise<{ records: KeyRecord[]; truncated: boolean }> {
+  const names = await collectRecordNames(backend)
+  const truncated = names.length > MAX_KEYS
+  const records = await readKeyRecords(backend, names.slice(0, MAX_KEYS))
   return { records, truncated }
 }
 
@@ -254,6 +264,36 @@ async function handleStats(backend: Backend, origin?: string): Promise<Response>
 async function handleKeys(backend: Backend, origin?: string): Promise<Response> {
   const { records, truncated } = await collectRecords(backend)
   return json(keysFromRecords(records, truncated), 200, origin)
+}
+
+/** 数据页分页键列表：只读取当前页，支持超过 1000 条的数据 */
+async function handleKeysPage(
+  backend: Backend,
+  body: Record<string, unknown>,
+  origin?: string,
+): Promise<Response> {
+  const names = await collectRecordNames(backend)
+  const total = names.length
+  const rawOffset = Number(body.offset)
+  const rawLimit = Number(body.limit)
+  const offset = Number.isFinite(rawOffset) ? Math.max(0, Math.floor(rawOffset)) : 0
+  const limit = Number.isFinite(rawLimit)
+    ? Math.min(1000, Math.max(1, Math.floor(rawLimit)))
+    : 500
+  const selected = names.slice(offset, offset + limit)
+  const records = await readKeyRecords(backend, selected)
+  const nextOffset = offset + selected.length
+  return json(
+    {
+      keys: keysFromRecords(records, false).keys,
+      total,
+      offset,
+      nextOffset,
+      hasMore: nextOffset < total,
+    },
+    200,
+    origin,
+  )
 }
 
 /** 概览一次扫描同时返回统计和键列表，避免打开后台时重复读取全部记录 */
@@ -399,6 +439,271 @@ async function handleDelete(
   return json({ ok: true, key }, 200, origin)
 }
 
+/** 批量读取本地记录（导入时用于准确判断冲突/合并，不受 keys 列表 1000 条上限影响） */
+async function handleGetMany(
+  backend: Backend,
+  body: Record<string, unknown>,
+  origin?: string,
+): Promise<Response> {
+  if (!Array.isArray(body.keys) || body.keys.length === 0) {
+    return json({ error: 'bad_request', message: '缺少 keys' }, 400, origin)
+  }
+  if (body.keys.length > MAX_GET_MANY_KEYS) {
+    return json(
+      { error: 'too_many_keys', message: `单次最多读取 ${MAX_GET_MANY_KEYS} 个键` },
+      413,
+      origin,
+    )
+  }
+
+  const keys = [...new Set(body.keys.filter((key): key is string => isDataKey(key)))]
+  const records: {
+    key: string
+    found: boolean
+    value?: unknown
+    updatedAt?: number
+    size?: number
+    legacy?: boolean
+  }[] = []
+  let bytes = 0
+
+  for (const key of keys) {
+    const raw = await backend.read(key)
+    if (raw === null) {
+      records.push({ key, found: false })
+      continue
+    }
+    const size = byteLength(raw)
+    bytes += size
+    if (bytes > MAX_GET_MANY_BYTES) {
+      return json(
+        { error: 'payload_too_large', message: '所选数据过大，请减少数量后重试' },
+        413,
+        origin,
+      )
+    }
+    const parsed = parseRecord(raw)
+    records.push({
+      key,
+      found: true,
+      value: parsed.value ?? null,
+      updatedAt: parsed.updatedAt,
+      size,
+      legacy: parsed.legacy,
+    })
+  }
+
+  return json({ records, bytes }, 200, origin)
+}
+
+/** 大备份分页导出：每页只读取所需值，避免全量读取造成的超时/体积限制 */
+async function handleBackupPage(
+  backend: Backend,
+  body: Record<string, unknown>,
+  origin?: string,
+): Promise<Response> {
+  const names = await collectRecordNames(backend)
+  const total = names.length
+  if (total > MAX_EXPORT_KEYS) {
+    return json(
+      { error: 'too_many_keys', message: `数据键超过 ${MAX_EXPORT_KEYS} 条，无法一次性导出` },
+      413,
+      origin,
+    )
+  }
+  const rawOffset = Number(body.offset)
+  const rawLimit = Number(body.limit)
+  const offset = Number.isFinite(rawOffset) ? Math.max(0, Math.floor(rawOffset)) : 0
+  const limit = Number.isFinite(rawLimit)
+    ? Math.min(MAX_EXPORT_PAGE, Math.max(1, Math.floor(rawLimit)))
+    : 100
+  const selected = names.slice(offset, offset + limit)
+  const records: { key: string; value: unknown; updatedAt: number; size: number }[] = []
+  let bytes = 0
+  let consumed = 0
+
+  for (const key of selected) {
+    const raw = await backend.read(key)
+    consumed += 1
+    if (raw === null) continue
+    const size = byteLength(raw)
+    if (records.length > 0 && bytes + size > MAX_EXPORT_PAGE_BYTES) {
+      consumed -= 1
+      break
+    }
+    bytes += size
+    const parsed = parseRecord(raw)
+    records.push({ key, value: parsed.value ?? null, updatedAt: parsed.updatedAt, size })
+  }
+
+  const nextOffset = offset + consumed
+  return json(
+    {
+      offset,
+      nextOffset,
+      total,
+      hasMore: nextOffset < total,
+      bytes,
+      records,
+    },
+    200,
+    origin,
+  )
+}
+
+async function handleImport(
+  request: Request,
+  backend: Backend,
+  body: Record<string, unknown>,
+  origin?: string,
+): Promise<Response> {
+  if (!Array.isArray(body.records) || body.records.length === 0) {
+    return json({ error: 'bad_request', message: '缺少导入记录' }, 400, origin)
+  }
+  if (body.records.length > MAX_IMPORT_RECORDS) {
+    return json(
+      { error: 'too_many_records', message: `单次最多导入 ${MAX_IMPORT_RECORDS} 条数据` },
+      413,
+      origin,
+    )
+  }
+
+  const skipExisting = body.skipExisting === true
+  const guardLocal = body.guardLocal === true
+  if (body.auditStart === true) {
+    await appendAudit(backend, {
+      actor: 'admin',
+      action: 'import',
+      note: `开始从 Classworks 云端批量导入${
+        typeof body.totalRecords === 'number' ? `（共 ${Math.floor(body.totalRecords)} 条）` : ''
+      }`,
+      ip: clientIp(request),
+      ua: clientUserAgent(request),
+    })
+  }
+  const records = new Map<
+    string,
+    { value: unknown; expectedUpdatedAt: number | null | undefined }
+  >()
+  for (const item of body.records) {
+    if (!item || typeof item !== 'object') {
+      return json({ error: 'bad_request', message: '导入记录格式错误' }, 400, origin)
+    }
+    const record = item as {
+      key?: unknown
+      value?: unknown
+      expectedUpdatedAt?: unknown
+    }
+    if (!isDataKey(record.key) || !('value' in record)) {
+      return json({ error: 'bad_request', message: '导入记录缺少合法 key 或 value' }, 400, origin)
+    }
+    const expected =
+      typeof record.expectedUpdatedAt === 'number'
+        ? record.expectedUpdatedAt
+        : record.expectedUpdatedAt === null
+          ? null
+          : undefined
+    records.set(record.key, { value: record.value, expectedUpdatedAt: expected })
+  }
+
+  const imported: { key: string; updatedAt: number; size: number }[] = []
+  const skipped: string[] = []
+  const failed: { key: string; message: string }[] = []
+  let totalBytes = 0
+
+  for (const [key, record] of records) {
+    try {
+      const existing = await backend.read(key)
+      if (skipExisting && existing !== null) {
+        skipped.push(key)
+        continue
+      }
+      if (guardLocal) {
+        if (record.expectedUpdatedAt === null || record.expectedUpdatedAt === undefined) {
+          if (existing !== null) {
+            failed.push({ key, message: '本地数据在预览后已被修改，未写入' })
+            continue
+          }
+        } else if (existing === null) {
+          failed.push({ key, message: '本地数据已被删除，未写入' })
+          continue
+        } else {
+          const current = parseRecord(existing)
+          if (current.updatedAt !== record.expectedUpdatedAt) {
+            failed.push({ key, message: '本地数据在预览后已被修改，未写入' })
+            continue
+          }
+        }
+      }
+      const stored: StoredRecord = { v: record.value, t: Date.now() }
+      const serialized = JSON.stringify(stored)
+      const size = byteLength(serialized)
+      if (size > MAX_VALUE_BYTES) {
+        failed.push({ key, message: '数据超过 1MB' })
+        continue
+      }
+      await backend.write(key, serialized)
+      totalBytes += size
+      imported.push({ key, updatedAt: stored.t, size })
+    } catch (err) {
+      console.error('[admin] 导入写入失败', key, err)
+      failed.push({ key, message: '写入失败' })
+    }
+  }
+
+  if (body.silent !== true && (imported.length > 0 || failed.length > 0)) {
+    await appendAudit(backend, {
+      actor: 'admin',
+      action: 'import',
+      note: `从 Classworks 云端导入 ${imported.length} 条${
+        skipped.length ? `，跳过 ${skipped.length} 条` : ''
+      }${failed.length ? `，失败 ${failed.length} 条` : ''}`,
+      size: totalBytes,
+      ip: clientIp(request),
+      ua: clientUserAgent(request),
+    })
+  }
+
+  return json(
+    {
+      imported,
+      skipped,
+      failed,
+      total: records.size,
+      bytes: totalBytes,
+    },
+    200,
+    origin,
+  )
+}
+
+/** 分批导入结束后写一条汇总日志，避免大导入刷满操作日志 */
+async function handleImportSummary(
+  request: Request,
+  backend: Backend,
+  body: Record<string, unknown>,
+  origin?: string,
+): Promise<Response> {
+  const imported = Math.max(0, Math.floor(Number(body.imported) || 0))
+  const skipped = Math.max(0, Math.floor(Number(body.skipped) || 0))
+  const failed = Math.max(0, Math.floor(Number(body.failed) || 0))
+  const bytes = Math.max(0, Math.floor(Number(body.bytes) || 0))
+  if (imported + skipped + failed === 0) {
+    return json({ ok: true, skippedLog: true }, 200, origin)
+  }
+  await appendAudit(backend, {
+    actor: 'admin',
+    action: 'import',
+    note: `从 Classworks 云端导入 ${imported} 条${
+      skipped ? `，跳过 ${skipped} 条` : ''
+    }${failed ? `，失败 ${failed} 条` : ''}${body.cancelled === true ? '（已取消）' : ''}`,
+    size: bytes,
+    ip: clientIp(request),
+    ua: clientUserAgent(request),
+  })
+  return json({ ok: true }, 200, origin)
+}
+
 async function handleBackup(backend: Backend, origin?: string): Promise<Response> {
   const { records, truncated } = await collectRecords(backend)
   if (truncated) {
@@ -503,6 +808,8 @@ export async function handleAdmin(
         return await handleStats(backend, origin)
       case 'keys':
         return await handleKeys(backend, origin)
+      case 'keys_page':
+        return await handleKeysPage(backend, body, origin)
       case 'overview':
         return await handleOverview(backend, origin)
       case 'get':
@@ -511,6 +818,14 @@ export async function handleAdmin(
         return await handlePut(request, backend, body, origin)
       case 'delete':
         return await handleDelete(request, backend, body, origin)
+      case 'import':
+        return await handleImport(request, backend, body, origin)
+      case 'import_summary':
+        return await handleImportSummary(request, backend, body, origin)
+      case 'get_many':
+        return await handleGetMany(backend, body, origin)
+      case 'backup_page':
+        return await handleBackupPage(backend, body, origin)
       case 'logs': {
         const logs = await readAudit(backend)
         return json({ logs, limit: AUDIT_LIMIT }, 200, origin)

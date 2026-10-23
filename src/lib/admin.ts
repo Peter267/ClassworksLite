@@ -79,6 +79,38 @@ export interface AdminBackup {
   data: Record<string, { value: unknown; updatedAt: number }>
 }
 
+export interface AdminImportRecord {
+  key: string
+  value: unknown
+  expectedUpdatedAt?: number | null
+}
+
+export interface AdminImportResult {
+  imported: { key: string; updatedAt: number; size: number }[]
+  skipped: string[]
+  failed: { key: string; message: string }[]
+  total: number
+  bytes: number
+}
+
+export interface AdminManyRecord {
+  key: string
+  found: boolean
+  value?: unknown
+  updatedAt?: number
+  size?: number
+  legacy?: boolean
+}
+
+export interface AdminBackupPage {
+  offset: number
+  nextOffset: number
+  total: number
+  hasMore: boolean
+  bytes: number
+  records: { key: string; value: unknown; updatedAt: number; size: number }[]
+}
+
 export function getAdminToken(): string | null {
   try {
     return sessionStorage.getItem(TOKEN_KEY)
@@ -103,9 +135,13 @@ export function clearAdminToken() {
   }
 }
 
-async function call<T>(payload: Record<string, unknown>, token?: string): Promise<T> {
+async function call<T>(
+  payload: Record<string, unknown>,
+  token?: string,
+  timeout = TIMEOUT,
+): Promise<T> {
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), TIMEOUT)
+  const timer = setTimeout(() => controller.abort(), timeout)
   try {
     const response = await fetch('/api/admin', {
       method: 'POST',
@@ -151,6 +187,14 @@ export const adminApi = {
   stats: (token: string) => call<AdminStats>({ action: 'stats' }, token),
   keys: (token: string) =>
     call<{ keys: AdminKeyInfo[]; truncated: boolean }>({ action: 'keys' }, token),
+  keysPage: (token: string, offset: number, limit = 500) =>
+    call<{
+      keys: AdminKeyInfo[]
+      total: number
+      offset: number
+      nextOffset: number
+      hasMore: boolean
+    }>({ action: 'keys_page', offset, limit }, token),
   overview: (token: string) =>
     call<{ stats: AdminStats; keys: AdminKeyInfo[]; truncated: boolean }>(
       { action: 'overview' },
@@ -179,5 +223,47 @@ export const adminApi = {
   logs: (token: string) =>
     call<{ logs: AdminLogEntry[]; limit: number }>({ action: 'logs' }, token),
   backup: (token: string) => call<AdminBackup>({ action: 'backup' }, token),
+  backupPage: (token: string, offset: number, limit = 100) =>
+    call<AdminBackupPage>({ action: 'backup_page', offset, limit }, token, 30_000),
+  getMany: (token: string, keys: string[]) =>
+    call<{ records: AdminManyRecord[]; bytes: number }>(
+      { action: 'get_many', keys },
+      token,
+      30_000,
+    ),
   clearLogs: (token: string) => call<{ ok: boolean }>({ action: 'clear_logs' }, token),
+  importRecords: (
+    token: string,
+    records: AdminImportRecord[],
+    options: {
+      skipExisting?: boolean
+      silent?: boolean
+      guardLocal?: boolean
+      auditStart?: boolean
+      totalRecords?: number
+    } = {},
+  ) =>
+    call<AdminImportResult>(
+      {
+        action: 'import',
+        records,
+        skipExisting: Boolean(options.skipExisting),
+        silent: Boolean(options.silent),
+        guardLocal: Boolean(options.guardLocal),
+        auditStart: Boolean(options.auditStart),
+        ...(options.totalRecords === undefined ? {} : { totalRecords: options.totalRecords }),
+      },
+      token,
+      30_000,
+    ),
+  importSummary: (
+    token: string,
+    summary: {
+      imported: number
+      skipped: number
+      failed: number
+      bytes: number
+      cancelled?: boolean
+    },
+  ) => call<{ ok: boolean }>({ action: 'import_summary', ...summary }, token),
 }

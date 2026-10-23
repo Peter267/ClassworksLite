@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { AppBar } from '../components/AppBar'
 import { MdiIcon } from '../components/MdiIcon'
+import { UpstreamImportPanel } from '../components/admin/UpstreamImportPanel'
 import { ConfirmDialog, Modal } from '../components/ui/Modal'
 import {
   AdminError,
@@ -14,19 +15,21 @@ import {
 import { relativeTime } from '../lib/date'
 import { toast } from '../lib/toast'
 
-type Tab = 'overview' | 'data' | 'logs'
+type Tab = 'overview' | 'data' | 'import' | 'logs'
 type Phase = 'checking' | 'login' | 'ready'
 type ActorFilter = 'all' | 'admin' | 'site'
 
 const TABS: { key: Tab; label: string; icon: string }[] = [
   { key: 'overview', label: '概览', icon: 'monitor' },
   { key: 'data', label: '数据', icon: 'database' },
+  { key: 'import', label: '云端导入', icon: 'file-import-outline' },
   { key: 'logs', label: '日志', icon: 'history' },
 ]
 
 const TAB_HEADINGS: Record<Tab, { title: string; subtitle: string }> = {
   overview: { title: '站点总览', subtitle: '全站数据、操作日志与备份' },
   data: { title: '数据管理', subtitle: '浏览、编辑、新建与删除全站数据键' },
+  import: { title: '云端导入', subtitle: '从上游 Classworks 云端批量迁移作业与配置' },
   logs: { title: '操作日志', subtitle: '管理员与站点的写入、删除和登录记录' },
 }
 
@@ -52,6 +55,7 @@ const ACTION_LABELS: Record<string, string> = {
   login_failed: '登录失败',
   write: '写入',
   delete: '删除',
+  import: '导入',
   clear_logs: '清空日志',
   denied: '拒绝访问',
 }
@@ -122,10 +126,14 @@ export function AdminPage({ onBack }: { onBack: () => void }) {
   const [loginError, setLoginError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [tab, setTab] = useState<Tab>('overview')
+  const [importVisited, setImportVisited] = useState(false)
 
   const [stats, setStats] = useState<AdminStats | null>(null)
   const [keys, setKeys] = useState<AdminKeyInfo[] | null>(null)
-  const [keysTruncated, setKeysTruncated] = useState(false)
+  const [keysTotal, setKeysTotal] = useState(0)
+  const [keysHasMore, setKeysHasMore] = useState(false)
+  const [keysNextOffset, setKeysNextOffset] = useState(0)
+  const [keysLoadingMore, setKeysLoadingMore] = useState(false)
   const [logs, setLogs] = useState<Awaited<ReturnType<typeof adminApi.logs>>['logs'] | null>(null)
   const [logLimit, setLogLimit] = useState(500)
 
@@ -144,6 +152,15 @@ export function AdminPage({ onBack }: { onBack: () => void }) {
   const [clearOpen, setClearOpen] = useState(false)
   const [clearing, setClearing] = useState(false)
   const [exporting, setExporting] = useState(false)
+  const exportCancelRef = useRef(false)
+  const [exportProgress, setExportProgress] = useState<{
+    open: boolean
+    status: 'running' | 'done' | 'error' | 'cancelled'
+    loaded: number
+    total: number
+    bytes: number
+    message?: string
+  } | null>(null)
 
   const handleAuthError = useCallback((err: unknown): boolean => {
     if (err instanceof AdminError && err.status === 401) {
@@ -153,6 +170,9 @@ export function AdminPage({ onBack }: { onBack: () => void }) {
       setLoginError('管理会话已过期，请重新登录')
       setStats(null)
       setKeys(null)
+      setKeysTotal(0)
+      setKeysHasMore(false)
+      setKeysNextOffset(0)
       setLogs(null)
       return true
     }
@@ -181,8 +201,6 @@ export function AdminPage({ onBack }: { onBack: () => void }) {
         }
         const logsResult = await adminApi.logs(token)
         setStats(overview.stats)
-        setKeys(overview.keys)
-        setKeysTruncated(overview.truncated)
         setLogs(logsResult.logs)
         setLogLimit(logsResult.limit)
       } catch (err) {
@@ -199,9 +217,11 @@ export function AdminPage({ onBack }: { onBack: () => void }) {
       if (!token) return
       if (withBusy) setBusy(true)
       try {
-        const result = await adminApi.keys(token)
+        const result = await adminApi.keysPage(token, 0, 500)
         setKeys(result.keys)
-        setKeysTruncated(result.truncated)
+        setKeysTotal(result.total)
+        setKeysHasMore(result.hasMore)
+        setKeysNextOffset(result.nextOffset)
       } catch (err) {
         if (!handleAuthError(err)) toast.error('加载数据失败', errorMessage(err))
       } finally {
@@ -209,6 +229,37 @@ export function AdminPage({ onBack }: { onBack: () => void }) {
       }
     },
     [token, handleAuthError],
+  )
+
+  const loadMoreKeys = useCallback(
+    async (all = false) => {
+      if (!token || keysLoadingMore) return
+      setKeysLoadingMore(true)
+      let nextOffset = keysNextOffset
+      let hasMore = keysHasMore
+      let accumulated = keys ?? []
+      try {
+        for (;;) {
+          const result = await adminApi.keysPage(token, nextOffset, 500)
+          const merged = new Map(accumulated.map((item) => [item.key, item]))
+          for (const item of result.keys) merged.set(item.key, item)
+          accumulated = [...merged.values()]
+          nextOffset = result.nextOffset
+          hasMore = result.hasMore
+          setKeys(accumulated)
+          setKeysTotal(result.total)
+          setKeysNextOffset(nextOffset)
+          setKeysHasMore(hasMore)
+          if (!all || !hasMore) break
+          await new Promise((resolve) => setTimeout(resolve, 0))
+        }
+      } catch (err) {
+        if (!handleAuthError(err)) toast.error('加载更多数据失败', errorMessage(err))
+      } finally {
+        setKeysLoadingMore(false)
+      }
+    },
+    [token, keys, keysHasMore, keysNextOffset, keysLoadingMore, handleAuthError],
   )
 
   const loadLogs = useCallback(
@@ -263,9 +314,17 @@ export function AdminPage({ onBack }: { onBack: () => void }) {
     if (tab === 'logs' && logs === null) void loadLogs()
   }, [phase, token, tab, keys, logs, loadKeys, loadLogs])
 
+  function openImport() {
+    selectTab('import')
+  }
+
   useEffect(() => {
     setPage(0)
   }, [query, group])
+
+  useEffect(() => {
+    if (tab === 'import') setImportVisited(true)
+  }, [tab])
 
   async function handleLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -293,6 +352,9 @@ export function AdminPage({ onBack }: { onBack: () => void }) {
     setLoginError(null)
     setStats(null)
     setKeys(null)
+    setKeysTotal(0)
+    setKeysHasMore(false)
+    setKeysNextOffset(0)
     setLogs(null)
     setTab('overview')
   }
@@ -427,20 +489,74 @@ export function AdminPage({ onBack }: { onBack: () => void }) {
   async function exportBackup() {
     if (!token || exporting) return
     setExporting(true)
+    exportCancelRef.current = false
+    setExportProgress({ open: true, status: 'running', loaded: 0, total: 0, bytes: 0 })
+    const exportedAt = Date.now()
     try {
-      const backup = await adminApi.backup(token)
-      const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' })
+      const parts: string[] = []
+      let offset = 0
+      let loaded = 0
+      let total = 0
+      let bytes = 0
+
+      const maxFileBytes = 200 * 1024 * 1024
+      for (;;) {
+        if (exportCancelRef.current) {
+          setExportProgress((current) =>
+            current
+              ? { ...current, status: 'cancelled', message: '已取消导出，未生成文件' }
+              : current,
+          )
+          toast.info('已取消导出', '未生成备份文件')
+          return
+        }
+        const page = await adminApi.backupPage(token, offset, 200)
+        total = page.total
+        for (const record of page.records) {
+          parts.push(
+            `${JSON.stringify(record.key)}:{"value":${JSON.stringify(
+              record.value,
+            )},"updatedAt":${record.updatedAt}}`,
+          )
+        }
+        loaded += page.records.length
+        bytes += page.bytes
+        if (bytes > maxFileBytes) {
+          throw new Error('导出数据超过 200 MB，请分批治理或使用服务器侧备份')
+        }
+        setExportProgress((current) =>
+          current ? { ...current, loaded, total, bytes } : current,
+        )
+        if (!page.hasMore) break
+        offset = page.nextOffset
+        // 让出主线程，保持进度条与取消按钮可响应
+        await new Promise((resolve) => setTimeout(resolve, 0))
+      }
+
+      const header = `{"exportedAt":${exportedAt},"count":${loaded},"bytes":${bytes},"data":{`
+      const blob = new Blob([header, parts.join(','), '}}'], { type: 'application/json' })
       const url = URL.createObjectURL(blob)
       const anchor = document.createElement('a')
       anchor.href = url
-      anchor.download = `classworks-lite-backup-${new Date().toISOString().slice(0, 10)}.json`
+      anchor.download = `classworks-lite-backup-${new Date(exportedAt)
+        .toISOString()
+        .slice(0, 10)}.json`
       document.body.appendChild(anchor)
       anchor.click()
       anchor.remove()
       URL.revokeObjectURL(url)
-      toast.success('备份已导出', `${backup.count} 条数据 · ${formatBytes(backup.bytes)}`)
+      setExportProgress((current) =>
+        current ? { ...current, status: 'done', loaded, total, bytes } : current,
+      )
+      toast.success('备份已导出', `${loaded} 条数据 · ${formatBytes(bytes)}`)
     } catch (err) {
-      if (!handleAuthError(err)) toast.error('导出失败', errorMessage(err))
+      if (handleAuthError(err)) {
+        setExportProgress(null)
+        return
+      }
+      const message = errorMessage(err)
+      setExportProgress((current) => (current ? { ...current, status: 'error', message } : current))
+      toast.error('导出失败', message)
     } finally {
       setExporting(false)
     }
@@ -475,6 +591,7 @@ export function AdminPage({ onBack }: { onBack: () => void }) {
   const recentLogs = (logs ?? []).slice(0, 6)
   const maxGroupBytes = Math.max(1, ...(stats?.groups.map((item) => item.bytes) ?? [0]))
   const heading = TAB_HEADINGS[tab]
+  const dataKeyCount = tab === 'data' && keysTotal > 0 ? keysTotal : stats?.totalKeys
 
   if (phase !== 'ready') {
     return (
@@ -580,7 +697,8 @@ export function AdminPage({ onBack }: { onBack: () => void }) {
             <div>
               <h1 className="text-h5">{heading.title}</h1>
               <p className="text-body-2 text-medium-emphasis mt-1">
-                {heading.subtitle} · {stats ? `${stats.totalKeys} 个数据键` : '正在加载…'}
+                {heading.subtitle} ·{' '}
+                {dataKeyCount !== undefined ? `${dataKeyCount} 个数据键` : '正在加载…'}
               </p>
             </div>
             <div className="d-flex flex-wrap align-center" style={{ gap: 8 }}>
@@ -811,6 +929,14 @@ export function AdminPage({ onBack }: { onBack: () => void }) {
                     type="button"
                     className="v-btn v-btn--size-small v-btn--variant-tonal"
                     data-color="primary"
+                    onClick={openImport}
+                  >
+                    <MdiIcon name="file-import-outline" size={16} />
+                    云端导入
+                  </button>
+                  <button
+                    type="button"
+                    className="v-btn v-btn--size-small v-btn--variant-tonal"
                     onClick={openCreate}
                   >
                     <MdiIcon name="plus" size={16} />
@@ -819,11 +945,31 @@ export function AdminPage({ onBack }: { onBack: () => void }) {
                 </div>
               </div>
 
-              {keysTruncated && (
+              {keysHasMore && (
                 <div className="v-alert v-alert--variant-tonal mb-3" data-color="warning">
                   <MdiIcon name="alert-circle-outline" size={20} />
-                  <div>
-                    数据量超过单次读取上限，当前列表/备份不完整。请先清理或分批导出。
+                  <div className="flex-grow-1">
+                    <div>
+                      已加载 {keys?.length ?? 0} / {keysTotal} 个数据键。搜索与分组筛选仅覆盖已加载的数据。
+                    </div>
+                    <div className="d-flex flex-wrap mt-2" style={{ gap: 8 }}>
+                      <button
+                        type="button"
+                        className="v-btn v-btn--size-small v-btn--variant-outlined"
+                        onClick={() => void loadMoreKeys(false)}
+                        disabled={keysLoadingMore}
+                      >
+                        {keysLoadingMore ? '加载中…' : '再加载 500 条'}
+                      </button>
+                      <button
+                        type="button"
+                        className="v-btn v-btn--size-small v-btn--variant-text"
+                        onClick={() => void loadMoreKeys(true)}
+                        disabled={keysLoadingMore}
+                      >
+                        加载全部
+                      </button>
+                    </div>
                   </div>
                 </div>
               )}
@@ -886,7 +1032,9 @@ export function AdminPage({ onBack }: { onBack: () => void }) {
 
                 <div className="admin-pagination">
                   <span className="text-caption text-medium-emphasis">
-                    共 {filteredKeys.length} 条 · 第 {currentPage + 1} / {pageCount} 页
+                    已加载 {keys?.length ?? 0}
+                    {keysTotal ? ` / ${keysTotal}` : ''} 条 · 当前筛选 {filteredKeys.length} 条 · 第{' '}
+                    {currentPage + 1} / {pageCount} 页
                   </span>
                   <div className="admin-pagination-actions">
                     <button
@@ -913,6 +1061,27 @@ export function AdminPage({ onBack }: { onBack: () => void }) {
                 </div>
               </section>
             </>
+          )}
+
+          {token && importVisited && (
+            <div hidden={tab !== 'import'}>
+              <UpstreamImportPanel
+                adminToken={token}
+                onChanged={() => {
+                  // 导入后让数据/日志页按需重新读取，避免展示旧列表
+                  setKeys(null)
+                  setKeysTotal(0)
+                  setKeysHasMore(false)
+                  setKeysNextOffset(0)
+                  setLogs(null)
+                  void loadOverview(false)
+                }}
+                onOpenData={() => selectTab('data')}
+                onAuthError={(err) => {
+                  handleAuthError(err)
+                }}
+              />
+            </div>
           )}
 
           {tab === 'logs' && (
@@ -1108,6 +1277,133 @@ export function AdminPage({ onBack }: { onBack: () => void }) {
               <div className="admin-json-status text-error">JSON 格式错误：{jsonError}</div>
             )}
             {editorError && <div className="admin-json-status text-error">{editorError}</div>}
+          </div>
+        )}
+      </Modal>
+
+      <Modal
+        open={Boolean(exportProgress?.open)}
+        onClose={() => {
+          if (!exporting) setExportProgress(null)
+        }}
+        title="导出全站备份"
+        width={460}
+        closable={!exporting}
+        maskClosable={false}
+        footer={
+          <>
+            <div className="flex-grow-1" />
+            {exporting ? (
+              <button
+                type="button"
+                className="v-btn v-btn--variant-text"
+                data-color="error"
+                onClick={() => {
+                  exportCancelRef.current = true
+                  setExportProgress((current) =>
+                    current ? { ...current, message: '正在取消…' } : current,
+                  )
+                }}
+              >
+                {exportProgress?.message === '正在取消…' ? '正在取消…' : '取消导出'}
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="v-btn v-btn--variant-flat"
+                data-color="primary"
+                onClick={() => setExportProgress(null)}
+              >
+                关闭
+              </button>
+            )}
+          </>
+        }
+      >
+        {exportProgress && (
+          <div className="d-flex flex-column" style={{ gap: 14 }}>
+            <div className="d-flex align-center" style={{ gap: 10 }}>
+              <MdiIcon
+                name={
+                  exportProgress.status === 'done'
+                    ? 'check-circle'
+                    : exportProgress.status === 'error'
+                      ? 'alert-circle-outline'
+                      : 'database'
+                }
+                size={22}
+                className={
+                  exportProgress.status === 'done'
+                    ? 'text-success'
+                    : exportProgress.status === 'error'
+                      ? 'text-error'
+                      : 'text-primary'
+                }
+              />
+              <div className="text-body-2">
+                {exportProgress.status === 'running'
+                  ? '正在分页读取全站数据…'
+                  : exportProgress.status === 'done'
+                    ? '导出完成，下载已开始'
+                    : exportProgress.status === 'cancelled'
+                      ? '导出已取消'
+                      : '导出失败'}
+              </div>
+            </div>
+
+            <div>
+
+              <div
+                className={`v-progress-linear ${
+                  exportProgress.status === 'running' && exportProgress.total === 0
+                    ? 'v-progress-linear--indeterminate'
+                    : ''
+                }`}
+                style={{ height: 8, borderRadius: 4 }}
+              >
+                <div
+                  className="v-progress-linear__bar"
+                  style={{
+                    width:
+                      exportProgress.total > 0
+                        ? `${Math.min(100, (exportProgress.loaded / exportProgress.total) * 100)}%`
+                        : undefined,
+                    background:
+                      exportProgress.status === 'error'
+                        ? 'rgb(var(--v-theme-error))'
+                        : exportProgress.status === 'done'
+                          ? 'rgb(var(--v-theme-success))'
+                          : undefined,
+                  }}
+                />
+              </div>
+              <div
+                className="d-flex justify-space-between text-caption text-medium-emphasis mt-2"
+                style={{ gap: 12 }}
+              >
+                <span>
+                  {exportProgress.total > 0
+                    ? `${exportProgress.loaded} / ${exportProgress.total} 条`
+                    : '正在统计数据量…'}
+                </span>
+                <span>{formatBytes(exportProgress.bytes)}</span>
+              </div>
+            </div>
+
+            {exportProgress.message && (
+              <div
+                className={`text-caption ${
+                  exportProgress.status === 'error' ? 'text-error' : 'text-medium-emphasis'
+                }`}
+              >
+                {exportProgress.message}
+              </div>
+            )}
+            {exportProgress.status === 'done' && (
+              <div className="text-caption text-medium-emphasis">
+                文件包含全部 {exportProgress.loaded} 条数据，可用于迁移或留档。
+              </div>
+            )}
           </div>
         )}
       </Modal>

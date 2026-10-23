@@ -16,6 +16,7 @@ export type AuditAction =
   | 'login_failed'
   | 'write'
   | 'delete'
+  | 'import'
   | 'clear_logs'
   | 'denied'
 
