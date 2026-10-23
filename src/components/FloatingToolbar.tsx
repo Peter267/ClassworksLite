@@ -59,7 +59,8 @@ export function FloatingToolbar({ onCopied }: { onCopied?: (count: number) => vo
 
   return (
     <div className="floating-toolbar-container">
-      <div className="v-card floating-toolbar">
+      <div className="toolbar-slide slide-y-enter">
+        <div className="v-card floating-toolbar">
         <button
           type="button"
           className="v-btn v-btn--icon v-btn--variant-text toolbar-btn"
@@ -126,12 +127,13 @@ export function FloatingToolbar({ onCopied }: { onCopied?: (count: number) => vo
             <Icon name="right" size={22} />
           </button>
         )}
+        </div>
       </div>
 
       {!isToday && (
         <button
           type="button"
-          className="v-btn v-btn--size-large v-btn--variant-flat side-action-btn"
+          className="v-btn v-btn--size-large v-btn--variant-flat side-action-btn slide-x-reverse-enter"
           data-color="primary"
           disabled={copying}
           onClick={() => void copyToToday()}

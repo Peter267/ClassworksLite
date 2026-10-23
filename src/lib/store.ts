@@ -325,13 +325,12 @@ class BoardStore {
         return false
       }
     }
+    // 与上游一致：切换日期时保留旧板面，等新数据返回后整体替换
     this.patch({
       date,
       dateKey: toDateKey(date),
-      board: emptyBoard(),
       dirty: false,
       loaded: false,
-      updatedAt: null,
       status: 'loading',
     })
     // 日期已经切换；即使读取失败也返回 true，让调用方同步 URL，页面会自行展示错误状态

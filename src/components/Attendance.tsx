@@ -89,7 +89,34 @@ export function AttendanceCard({ onOpen }: { onOpen: () => void }) {
   const { absent, late, exclude } = visibleAttendance(state.students, state.board.attendance)
 
   return (
-    <article className="v-card border rounded-xl glow-track cursor-pointer" onClick={onOpen}>
+    <article
+      className="v-card border rounded-xl glow-track cursor-pointer"
+      onClick={onOpen}
+      onMouseMove={(event) => {
+        const rect = event.currentTarget.getBoundingClientRect()
+        event.currentTarget.style.setProperty(
+          '--x',
+          `${((event.clientX - rect.left) / rect.width) * 100}%`,
+        )
+        event.currentTarget.style.setProperty(
+          '--y',
+          `${((event.clientY - rect.top) / rect.height) * 100}%`,
+        )
+      }}
+      onTouchMove={(event) => {
+        if (event.touches.length !== 1) return
+        const touch = event.touches[0]
+        const rect = event.currentTarget.getBoundingClientRect()
+        event.currentTarget.style.setProperty(
+          '--x',
+          `${((touch.clientX - rect.left) / rect.width) * 100}%`,
+        )
+        event.currentTarget.style.setProperty(
+          '--y',
+          `${((touch.clientY - rect.top) / rect.height) * 100}%`,
+        )
+      }}
+    >
       <div className="v-card-title">
         <MdiIcon name="account-group" size={20} className="text-primary mr-2" />
         出勤统计

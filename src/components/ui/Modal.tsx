@@ -24,6 +24,12 @@ interface ModalProps {
   maskClosable?: boolean
   /** 对话框主体是否使用紧凑内边距 */
   bare?: boolean
+  /** 与上游 Vuetify 一致：普通缩放 / 从底部滑入 */
+  transition?: 'dialog' | 'bottom'
+  /** 全屏对话框（无圆角、无外边距） */
+  fullscreen?: boolean
+  /** 是否显示遮罩，默认显示 */
+  scrim?: boolean
 }
 
 /**
@@ -42,12 +48,37 @@ export function Modal({
   className = '',
   maskClosable = true,
   bare = false,
+  transition = 'dialog',
+  fullscreen = false,
+  scrim = true,
 }: ModalProps) {
   const panelRef = useRef<HTMLDivElement>(null)
   const titleId = useId()
   const mobile = useMediaQuery('(max-width: 599px)')
-  const fullscreen = fullscreenOnMobile && mobile
+  const fullscreenLayout = fullscreen || (fullscreenOnMobile && mobile)
   const [scrollbarWidth, setScrollbarWidth] = useState(0)
+  const [rendered, setRendered] = useState(open)
+  const [phase, setPhase] = useState<'idle' | 'enter' | 'leave'>('idle')
+  const wasOpen = useRef(open)
+
+  useEffect(() => {
+    if (open && !wasOpen.current) {
+      wasOpen.current = true
+      setRendered(true)
+      setPhase('enter')
+      const timer = window.setTimeout(() => setPhase('idle'), 230)
+      return () => window.clearTimeout(timer)
+    }
+    if (!open && wasOpen.current) {
+      wasOpen.current = false
+      setPhase('leave')
+      const timer = window.setTimeout(() => {
+        setRendered(false)
+        setPhase('idle')
+      }, 300)
+      return () => window.clearTimeout(timer)
+    }
+  }, [open])
   const onCloseRef = useRef(onClose)
   const closableRef = useRef(closable)
   onCloseRef.current = onClose
@@ -111,28 +142,40 @@ export function Modal({
     if (open) panelRef.current?.focus()
   }, [open])
 
-  if (!open || typeof document === 'undefined') return null
+  if (!rendered || typeof document === 'undefined') return null
 
   return createPortal(
     <div
-      className="v-overlay"
+      className={`v-overlay v-overlay--modal ${fullscreenLayout ? 'v-overlay--fullscreen' : ''} ${
+        phase === 'enter' ? 'v-overlay--enter' : phase === 'leave' ? 'v-overlay--leave' : ''
+      }`}
       role="dialog"
       aria-modal="true"
       aria-labelledby={title ? titleId : undefined}
-      style={scrollbarWidth ? { paddingRight: 24 + scrollbarWidth } : undefined}
+      style={scrollbarWidth && !fullscreenLayout ? { paddingRight: 24 + scrollbarWidth } : undefined}
     >
-      <div
-        className="absolute inset-0"
-        onClick={maskClosable ? onClose : undefined}
-        aria-hidden="true"
-      />
+      {scrim ? (
+        <div
+          className="absolute inset-0 v-overlay__scrim"
+          onClick={maskClosable ? onClose : undefined}
+          aria-hidden="true"
+        />
+      ) : (
+        <div
+          className="absolute inset-0"
+          onClick={maskClosable ? onClose : undefined}
+          aria-hidden="true"
+        />
+      )}
       <div
         ref={panelRef}
         tabIndex={-1}
-        className={`v-dialog ${fullscreen ? 'v-dialog--fullscreen' : ''} ${className}`}
+        className={`v-dialog ${fullscreenLayout ? 'v-dialog--fullscreen' : ''} ${
+          transition === 'bottom' ? 'v-dialog--bottom' : ''
+        } ${phase === 'enter' ? 'v-dialog--enter' : phase === 'leave' ? 'v-dialog--leave' : ''} ${className}`}
         style={{
-          maxWidth: width,
-          maxHeight: fullscreen ? undefined : 'calc(100dvh - 48px)',
+          maxWidth: fullscreenLayout ? 'none' : width,
+          maxHeight: fullscreenLayout ? undefined : 'calc(100dvh - 48px)',
           display: 'flex',
           flexDirection: 'column',
           outline: 'none',

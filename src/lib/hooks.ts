@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { getAccessStatus, subscribeAccess } from './access'
 import { settings } from './settings'
 import { store } from './store'
@@ -86,6 +86,98 @@ export function useMasonry(deps: unknown[] = []) {
   }, [reflow, ...deps])
 
   return { containerRef, reflow }
+}
+
+export type PresencePhase = 'stable' | 'enter' | 'leave'
+
+export interface PresenceEntry<T> {
+  key: string
+  item: T
+  phase: PresencePhase
+}
+
+/**
+ * 列表进出场（对齐 Vue TransitionGroup 的 enter / leave）：
+ * 新条目标记为 enter，移除条目继续渲染到动画结束再删除。
+ */
+export function usePresence<T>(
+  items: T[],
+  keyOf: (item: T) => string,
+  timing: { enter: number; leave: number },
+) {
+  const keyOfRef = useRef(keyOf)
+  keyOfRef.current = keyOf
+  const [entries, setEntries] = useState<PresenceEntry<T>[]>(() =>
+    items.map((item) => ({ key: keyOf(item), item, phase: 'stable' })),
+  )
+  const leaveTimers = useRef(new Map<string, number>())
+
+  useEffect(() => {
+    const keyFn = keyOfRef.current
+    setEntries((previous) => {
+      const previousMap = new Map(previous.map((entry) => [entry.key, entry]))
+      const nextKeys = new Set(items.map(keyFn))
+      const next = items.map<PresenceEntry<T>>((item) => {
+        const key = keyFn(item)
+        const existing = previousMap.get(key)
+        return existing
+          ? { key, item, phase: existing.phase === 'leave' ? 'enter' : existing.phase }
+          : { key, item, phase: 'enter' }
+      })
+      const leaving = previous
+        .filter((entry) => !nextKeys.has(entry.key))
+        .map<PresenceEntry<T>>((entry) =>
+          entry.phase === 'leave' ? entry : { ...entry, phase: 'leave' },
+        )
+      // 让离场条目停留在原位置附近，避免删除卡片时先跳到末尾再淡出
+      const withLeaving = [...next]
+      for (const entry of leaving) {
+        const oldIndex = previous.findIndex((item) => item.key === entry.key)
+        withLeaving.splice(Math.min(Math.max(oldIndex, 0), withLeaving.length), 0, entry)
+      }
+      return withLeaving
+    })
+  }, [items])
+
+  useEffect(() => {
+    for (const [key, timer] of leaveTimers.current) {
+      const entry = entries.find((item) => item.key === key)
+      if (!entry || entry.phase !== 'leave') {
+        window.clearTimeout(timer)
+        leaveTimers.current.delete(key)
+      }
+    }
+    for (const entry of entries) {
+      if (entry.phase !== 'leave' || leaveTimers.current.has(entry.key)) continue
+      const timer = window.setTimeout(() => {
+        leaveTimers.current.delete(entry.key)
+        setEntries((previous) =>
+          previous.filter((item) => !(item.key === entry.key && item.phase === 'leave')),
+        )
+      }, timing.leave)
+      leaveTimers.current.set(entry.key, timer)
+    }
+  }, [entries, timing.leave])
+
+  useEffect(() => {
+    if (!entries.some((entry) => entry.phase === 'enter')) return
+    const timer = window.setTimeout(() => {
+      setEntries((previous) =>
+        previous.map((entry) => (entry.phase === 'enter' ? { ...entry, phase: 'stable' } : entry)),
+      )
+    }, timing.enter)
+    return () => window.clearTimeout(timer)
+  }, [entries, timing.enter])
+
+  useEffect(
+    () => () => {
+      for (const timer of leaveTimers.current.values()) window.clearTimeout(timer)
+      leaveTimers.current.clear()
+    },
+    [],
+  )
+
+  return entries
 }
 
 /** 媒体查询 */

@@ -4,17 +4,39 @@ import { AttendanceCard, AttendanceDialog, AttendanceSidebar } from '../componen
 import { EditDialog } from '../components/EditDialog'
 import { FloatingToolbar } from '../components/FloatingToolbar'
 import { HitokotoCard } from '../components/HitokotoCard'
+import { HomeSkeleton } from '../components/HomeSkeleton'
 import { EmptySubjectCard, HomeworkCard } from '../components/HomeworkCard'
 import { Icon } from '../components/Icon'
 import { RandomPicker } from '../components/RandomPicker'
 import { StudentsDialog, SubjectsDialog } from '../components/PeopleDialogs'
 import { TimeCard } from '../components/TimeCard'
 import { UafTransferDialog } from '../components/UafTransferDialog'
+import { Modal } from '../components/ui/Modal'
 import { isPastDay, isSameDay, relativeDayLabel, today } from '../lib/date'
-import { useAppState, useMediaQuery, useMasonry, useReadOnly, useSetting } from '../lib/hooks'
+import {
+  useAppState,
+  useMediaQuery,
+  useMasonry,
+  usePresence,
+  useReadOnly,
+  useSetting,
+  type PresencePhase,
+} from '../lib/hooks'
 import { store } from '../lib/store'
 import { toast } from '../lib/toast'
 import type { ExamConfig } from '../lib/types'
+
+const GRID_ANIMATION: Record<PresencePhase, string> = {
+  stable: '',
+  enter: 'grid-enter',
+  leave: 'grid-leave',
+}
+
+const LIST_ANIMATION: Record<PresencePhase, string> = {
+  stable: '',
+  enter: 'v-list-enter',
+  leave: 'v-list-leave',
+}
 
 type BoardItem =
   | { key: string; kind: 'subject'; name: string; content: string; order: number }
@@ -80,6 +102,10 @@ export function Home({
   const isToday = isSameDay(state.date, today())
   const isPast = isPastDay(state.date)
   const dataReady = state.status === 'ready' && state.loaded
+  const everLoaded = useRef(false)
+  if (state.loaded) everLoaded.current = true
+  const initialLoading = !everLoaded.current && state.status === 'loading'
+  const showChrome = dataReady || everLoaded.current
   const readOnly = useReadOnly()
   const historyLocked = isPast && blockPast
   const editBlocked = historyLocked || readOnly
@@ -140,8 +166,6 @@ export function Home({
     return list.sort((a, b) => a.order - b.order)
   }, [state.board.homework, state.subjects, showAttendanceCard, timeCardEnabled, hitokotoEnabled])
 
-  const { containerRef } = useMasonry([items.length, isMobile])
-
   const unusedSubjects = useMemo(() => {
     const used = new Set(
       Object.entries(state.board.homework)
@@ -150,6 +174,17 @@ export function Home({
     )
     return [...state.subjects].sort((a, b) => a.order - b.order).filter((s) => !used.has(s.name))
   }, [state.subjects, state.board.homework])
+
+  const gridEntries = usePresence(items, (item) => item.key, { enter: 500, leave: 500 })
+  const emptyEntries = usePresence(unusedSubjects, (subject) => subject.name, {
+    enter: 300,
+    leave: 300,
+  })
+  const { containerRef } = useMasonry([
+    gridEntries.map((entry) => entry.key).join('|'),
+    isMobile,
+    dataReady,
+  ])
 
   const examMap = useMemo(() => {
     const map = new Map<string, ExamConfig>()
@@ -289,7 +324,7 @@ export function Home({
 
       <div className="d-flex" style={{ paddingTop: 'var(--appbar-h)' }}>
         <main className="flex-grow-1" style={{ minWidth: 0 }}>
-          <div className="main-window" style={{ padding: '16px 16px 96px' }}>
+          <div className="main-window bloom-container" style={{ padding: '16px 16px 96px' }}>
             {state.status === 'error' && (
               <div className="v-alert v-alert--variant-tonal mb-4" data-color="error">
                 <Icon name="warning" size={20} />
@@ -307,12 +342,12 @@ export function Home({
               </div>
             )}
 
-            {state.status === 'loading' && items.length === 0 ? (
+            {initialLoading ? (
               <HomeSkeleton />
             ) : (
               <>
                 <div className="grid-masonry" ref={containerRef}>
-                  {items.map((item) => {
+                  {gridEntries.map(({ key, item, phase }) => {
                     const content = (() => {
                       if (item.kind === 'time') return <TimeCard />
                       if (item.kind === 'hitokoto') return <HitokotoCard />
@@ -342,7 +377,11 @@ export function Home({
                     })()
 
                     return (
-                      <div className="grid-item" key={item.key} data-masonry-item>
+                      <div
+                        className={`grid-item ${GRID_ANIMATION[phase]}`}
+                        key={key}
+                        data-masonry-item
+                      >
                         {content}
                       </div>
                     )
@@ -352,37 +391,40 @@ export function Home({
                 <div className="empty-subjects mt-4">
                   {isMobile ? (
                     <div className="d-flex flex-wrap justify-center">
-                      {unusedSubjects.map((subject) => (
+                      {emptyEntries.map(({ key, item, phase }) => (
                         <EmptySubjectCard
-                          key={subject.name}
-                          name={subject.name}
+                          key={key}
+                          name={item.name}
                           variant="chip"
+                          animationClass={LIST_ANIMATION[phase]}
                           disabled={cardDisabled}
-                          onOpen={() => openSubject(subject.name)}
+                          onOpen={() => openSubject(item.name)}
                         />
                       ))}
                     </div>
                   ) : emptyDisplay === 'button' ? (
                     <div className="v-btn-group v-btn-group--divided">
-                      {unusedSubjects.map((subject) => (
+                      {emptyEntries.map(({ key, item, phase }) => (
                         <EmptySubjectCard
-                          key={subject.name}
-                          name={subject.name}
+                          key={key}
+                          name={item.name}
                           variant="button"
+                          animationClass={LIST_ANIMATION[phase]}
                           disabled={cardDisabled}
-                          onOpen={() => openSubject(subject.name)}
+                          onOpen={() => openSubject(item.name)}
                         />
                       ))}
                     </div>
                   ) : (
                     <div className="empty-subjects-grid">
-                      {unusedSubjects.map((subject) => (
+                      {emptyEntries.map(({ key, item, phase }) => (
                         <EmptySubjectCard
-                          key={subject.name}
-                          name={subject.name}
+                          key={key}
+                          name={item.name}
                           variant="card"
+                          animationClass={LIST_ANIMATION[phase]}
                           disabled={cardDisabled}
-                          onOpen={() => openSubject(subject.name)}
+                          onOpen={() => openSubject(item.name)}
                         />
                       ))}
                     </div>
@@ -542,10 +584,10 @@ export function Home({
           </div>
         </main>
 
-        {isDesktop && <AttendanceSidebar onOpen={() => setAttendanceOpen(true)} />}
+        {isDesktop && showChrome && <AttendanceSidebar onOpen={() => setAttendanceOpen(true)} />}
       </div>
 
-      <FloatingToolbar />
+      {showChrome && <FloatingToolbar />}
 
       <EditDialog
         open={Boolean(editing)}
@@ -605,25 +647,6 @@ export function Home({
         />
       )}
     </>
-  )
-}
-
-function HomeSkeleton() {
-  return (
-    <div className="grid-masonry">
-      {[220, 180, 260, 200, 170, 240].map((height, index) => (
-        <div className="grid-item" key={index}>
-          <div className="v-card border rounded-xl" style={{ padding: 16, minHeight: height }}>
-            <div className="skeleton" style={{ height: 20, width: 80 }} />
-            <div style={{ marginTop: 16, display: 'grid', gap: 8 }}>
-              <div className="skeleton" style={{ height: 14, width: '100%' }} />
-              <div className="skeleton" style={{ height: 14, width: '80%' }} />
-              <div className="skeleton" style={{ height: 14, width: '60%' }} />
-            </div>
-          </div>
-        </div>
-      ))}
-    </div>
   )
 }
 
@@ -724,34 +747,19 @@ function ExamDetailDialog({
   const exam = state.exams.find((item) => item.id === examId)
 
   return (
-    <div className="v-overlay" role="dialog" aria-modal="true">
-      <div className="absolute inset-0" onClick={onClose} />
-      <div className="v-dialog" style={{ maxWidth: 500, position: 'relative' }}>
-        <div className="v-card-title">考试看板</div>
-        <div className="v-card-text">
-          <div className="v-list">
-            <button type="button" className="v-list-item v-list-item--active" onClick={onOpenBoard}>
-              <span className="v-list-item-title">打开考试看板</span>
-              <div className="flex-grow-1" />
-              <Icon name="arrowRight" size={18} />
-            </button>
-          </div>
-          <div className="v-list">
-            {exam ? (
-              <div className="v-list-item">
-                <Icon name="calendar" size={20} className="text-primary mr-3" />
-                <div>
-                  <div className="v-list-item-title">{exam.examName}</div>
-                  <div className="v-list-item-subtitle">{exam.id}</div>
-                </div>
-              </div>
-            ) : (
-              <div className="text-center py-4 text-grey">暂无考试配置</div>
-            )}
-          </div>
-        </div>
-        <div className="v-card-actions">
-          <button type="button" className="v-btn v-btn--variant-tonal" data-color="error" onClick={onRemove}>
+    <Modal
+      open
+      onClose={onClose}
+      title={<span className="text-h6">考试看板</span>}
+      width={500}
+      footer={
+        <>
+          <button
+            type="button"
+            className="v-btn v-btn--variant-tonal"
+            data-color="error"
+            onClick={onRemove}
+          >
             <Icon name="trash" size={18} />
             移除卡片
           </button>
@@ -759,8 +767,29 @@ function ExamDetailDialog({
           <button type="button" className="v-btn v-btn--variant-text" onClick={onClose}>
             关闭
           </button>
-        </div>
+        </>
+      }
+    >
+      <div className="v-list">
+        <button type="button" className="v-list-item v-list-item--active" onClick={onOpenBoard}>
+          <span className="v-list-item-title">打开考试看板</span>
+          <div className="flex-grow-1" />
+          <Icon name="arrowRight" size={18} />
+        </button>
       </div>
-    </div>
+      <div className="v-list">
+        {exam ? (
+          <div className="v-list-item">
+            <Icon name="calendar" size={20} className="text-primary mr-3" />
+            <div>
+              <div className="v-list-item-title">{exam.examName}</div>
+              <div className="v-list-item-subtitle">{exam.id}</div>
+            </div>
+          </div>
+        ) : (
+          <div className="text-center py-4 text-grey">暂无考试配置</div>
+        )}
+      </div>
+    </Modal>
   )
 }

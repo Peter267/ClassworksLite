@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { AccessGate } from './components/AccessGate'
 import { AppBar } from './components/AppBar'
+import { GlobalRipple } from './components/ui/GlobalRipple'
 import { Toaster } from './components/ui/Toaster'
 import { MessageDrawer } from './components/MessageDrawer'
 import { StudentsDialog, SubjectsDialog } from './components/PeopleDialogs'
@@ -88,6 +89,27 @@ export default function App() {
   const { isFullscreen, toggle } = useFullscreen()
   const { bgEnabled, bgUrl, bgBlur, bgOpacity } = useTheme()
   const [cardHover] = useSetting<boolean>('display.cardHoverEffect')
+  const [displayPath, setDisplayPath] = useState(path)
+  const [pagePhase, setPagePhase] = useState<'idle' | 'enter' | 'leave'>('idle')
+
+  useEffect(() => {
+    if (path === displayPath) {
+      setPagePhase((phase) => (phase === 'leave' ? 'idle' : phase))
+      return
+    }
+    setPagePhase('leave')
+    const timer = window.setTimeout(() => {
+      setDisplayPath(path)
+      setPagePhase('enter')
+    }, 300)
+    return () => window.clearTimeout(timer)
+  }, [path, displayPath])
+
+  useEffect(() => {
+    if (pagePhase !== 'enter') return
+    const timer = window.setTimeout(() => setPagePhase('idle'), 300)
+    return () => window.clearTimeout(timer)
+  }, [pagePhase])
 
   const [studentsOpen, setStudentsOpen] = useState(false)
   const [subjectsOpen, setSubjectsOpen] = useState(false)
@@ -196,6 +218,7 @@ export default function App() {
 
   return (
     <div className="v-application" data-hover-effect={cardHover ? 'on' : 'off'}>
+      <GlobalRipple />
       {bgEnabled && bgUrl && (
         <>
           <div
@@ -215,48 +238,57 @@ export default function App() {
         </>
       )}
 
-      {showContent && path === '/exams' && (
-        <AppBar
-          onOpenSettings={openSettings}
-          back={{ label: '返回', onBack: () => navigate('/') }}
-          title="考试看板"
-        />
+      {showContent && (
+        <div
+          className={`route-view ${
+            pagePhase === 'enter' ? 'md3-enter' : pagePhase === 'leave' ? 'md3-leave' : ''
+          }`}
+        >
+          {displayPath === '/' && (
+            <Home
+              onOpenSettings={openSettings}
+              onNavigate={(target) => navigate(target === 'list' ? '/list' : '/exams')}
+              isFullscreen={isFullscreen}
+              onToggleFullscreen={toggle}
+              pendingEdit={pendingEdit}
+              onPendingEditHandled={() => setPendingEdit(null)}
+            />
+          )}
+
+          {displayPath === '/settings' && (
+            <SettingsPage
+              onBack={() => navigate('/')}
+              openStudents={() => setStudentsOpen(true)}
+              openSubjects={() => setSubjectsOpen(true)}
+              openExams={() => navigate('/exams')}
+              openAdmin={() => navigate('/admin')}
+            />
+          )}
+
+          {displayPath === '/admin' && <AdminPage onBack={() => navigate('/')} />}
+
+          {displayPath === '/list' && (
+            <ListPage
+              onBack={() => navigate('/')}
+              onEdit={(subject) => {
+                setPendingEdit(subject)
+                navigate('/')
+              }}
+            />
+          )}
+
+          {displayPath === '/exams' && (
+            <>
+              <AppBar
+                onOpenSettings={openSettings}
+                back={{ label: '返回', onBack: () => navigate('/') }}
+                title="考试看板"
+              />
+              <ExamBoard onBack={() => navigate('/')} />
+            </>
+          )}
+        </div>
       )}
-
-      {showContent && path === '/' && (
-        <Home
-          onOpenSettings={openSettings}
-          onNavigate={(target) => navigate(target === 'list' ? '/list' : '/exams')}
-          isFullscreen={isFullscreen}
-          onToggleFullscreen={toggle}
-          pendingEdit={pendingEdit}
-          onPendingEditHandled={() => setPendingEdit(null)}
-        />
-      )}
-
-      {showContent && path === '/settings' && (
-        <SettingsPage
-          onBack={() => navigate('/')}
-          openStudents={() => setStudentsOpen(true)}
-          openSubjects={() => setSubjectsOpen(true)}
-          openExams={() => navigate('/exams')}
-          openAdmin={() => navigate('/admin')}
-        />
-      )}
-
-      {showContent && path === '/admin' && <AdminPage onBack={() => navigate('/')} />}
-
-      {showContent && path === '/list' && (
-        <ListPage
-          onBack={() => navigate('/')}
-          onEdit={(subject) => {
-            setPendingEdit(subject)
-            navigate('/')
-          }}
-        />
-      )}
-
-      {showContent && path === '/exams' && <ExamBoard onBack={() => navigate('/')} />}
 
       {showContent && (
         <>
@@ -294,7 +326,7 @@ export default function App() {
         </div>
       )}
 
-      {(accessPhase === 'checking' || (showContent && !ready)) && (
+      {(accessPhase === 'checking' || (showContent && !ready && path !== '/')) && (
         <div
           className="v-overlay"
           style={{ background: 'rgb(var(--v-theme-background))', zIndex: 3000 }}

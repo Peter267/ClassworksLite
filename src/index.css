@@ -56,6 +56,7 @@
   --v-border-color: 255, 255, 255;
   --v-border-opacity: 0.12;
   --v-overlay-opacity: 0.32;
+  --v-theme-overlay-multiplier: 1;
 
   --v-elevation-1: 0 2px 1px -1px rgba(0, 0, 0, 0.2), 0 1px 1px 0 rgba(0, 0, 0, 0.14),
     0 1px 3px 0 rgba(0, 0, 0, 0.12);
@@ -300,9 +301,22 @@
     border-radius: var(--radius-card);
     box-shadow: var(--v-elevation-1);
     transition:
-      box-shadow 0.28s cubic-bezier(0.4, 0, 0.2, 1),
-      transform 0.28s cubic-bezier(0.4, 0, 0.2, 1),
-      background-color 0.28s;
+      box-shadow 400ms cubic-bezier(0.05, 0.7, 0.1, 1),
+      transform 400ms cubic-bezier(0.05, 0.7, 0.1, 1),
+      background-color 400ms cubic-bezier(0.05, 0.7, 0.1, 1);
+  }
+
+  .v-card:active {
+    transform: scale(0.99);
+    transition-duration: 80ms;
+  }
+
+  .v-dialog .v-card {
+    transition: none;
+  }
+
+  .v-dialog .v-card:active {
+    transform: none;
   }
 
   .v-card.border,
@@ -405,7 +419,8 @@
   /* 设置项「卡片悬浮效果」关闭时保持静态 */
   [data-hover-effect='off'] .hover-card,
   [data-hover-effect='off'] .v-card.cursor-pointer,
-  [data-hover-effect='off'] .card-interactive {
+  [data-hover-effect='off'] .card-interactive,
+  [data-hover-effect='off'] .empty-subject-card {
     transition: none;
   }
 
@@ -414,9 +429,41 @@
   [data-hover-effect='off'] .v-card.cursor-pointer:hover,
   [data-hover-effect='off'] .v-card.cursor-pointer:active,
   [data-hover-effect='off'] .card-interactive:hover,
-  [data-hover-effect='off'] .card-interactive:active {
+  [data-hover-effect='off'] .card-interactive:active,
+  [data-hover-effect='off'] .empty-subject-card:hover {
     transform: none;
     box-shadow: none;
+  }
+
+  /* 上游 bloom-container：主区域卡片 / 按钮的柔光 */
+  .bloom-container .v-card:hover {
+    box-shadow:
+      0 4px 20px rgba(0, 0, 0, 0.1),
+      0 0 15px rgba(var(--v-theme-primary), 0.3) !important;
+  }
+
+  .bloom-container .v-btn {
+    transition: box-shadow 0.3s ease;
+  }
+
+  .bloom-container .v-btn:hover {
+    box-shadow: 0 0 10px rgba(var(--v-theme-primary), 0.4);
+  }
+
+  /* 上游 index.scss：栅格卡片统一悬浮 / 按下 */
+  .grid-item .v-card {
+    transition:
+      transform 0.3s ease,
+      box-shadow 0.3s ease;
+  }
+
+  .grid-item .v-card:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 8px 16px rgba(0, 0, 0, 0.15) !important;
+  }
+
+  .grid-item .v-card:active {
+    transform: translateY(-2px);
   }
 
   .cursor-not-allowed {
@@ -424,6 +471,14 @@
   }
   .v-card.cursor-not-allowed:hover {
     transform: none !important;
+  }
+
+  [data-hover-effect='off'] .bloom-container .v-card:hover,
+  [data-hover-effect='off'] .bloom-container .v-btn:hover,
+  [data-hover-effect='off'] .grid-item .v-card:hover,
+  [data-hover-effect='off'] .grid-item .v-card:active {
+    transform: none;
+    box-shadow: none;
   }
 
   .glow-track {
@@ -503,16 +558,16 @@
     vertical-align: middle;
     cursor: pointer;
     user-select: none;
+    touch-action: manipulation;
     transition:
-      background-color 0.2s cubic-bezier(0.4, 0, 0.2, 1),
-      box-shadow 0.2s cubic-bezier(0.4, 0, 0.2, 1),
-      color 0.2s,
-      opacity 0.2s;
+      background-color 250ms cubic-bezier(0.2, 0, 0, 1),
+      transform 150ms cubic-bezier(0.05, 0.7, 0.1, 1);
   }
 
   .v-btn:active:not(:disabled),
   .btn:active:not(:disabled) {
     transform: scale(0.98);
+    transition-duration: 80ms;
   }
 
   .v-btn:disabled,
@@ -553,6 +608,12 @@
     height: 40px;
     padding: 0;
     border-radius: 50%;
+  }
+
+  .v-btn--size-x-large.v-btn--icon {
+    width: 52px;
+    min-width: 52px;
+    height: 52px;
   }
 
   .v-btn--variant-text {
@@ -804,6 +865,11 @@
 
   .v-list-item:hover {
     background: rgba(var(--v-theme-on-surface), 0.04);
+  }
+
+  /* 作业卡片内的单行文字不响应 hover 背景高亮 */
+  .v-list-item.homework-line:hover {
+    background: transparent;
   }
 
   .v-list-item--active {
@@ -1115,7 +1181,105 @@
     background: rgb(var(--v-theme-surface));
     color: rgb(var(--v-theme-on-surface));
     box-shadow: var(--v-elevation-8);
-    animation: dialog-in 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  /* 上游 Vuetify 弹层：遮罩淡入淡出 + 对话框缩放 / 底部滑入 */
+  .v-overlay--modal {
+    background: transparent;
+  }
+
+  .v-overlay--fullscreen {
+    padding: 0;
+  }
+
+  .v-overlay__scrim {
+    background: rgba(0, 0, 0, var(--v-overlay-opacity));
+  }
+
+  .v-overlay--enter .v-overlay__scrim {
+    animation: overlay-enter 0.3s cubic-bezier(0.4, 0, 0.2, 1) both;
+  }
+
+  .v-overlay--leave {
+    pointer-events: none;
+  }
+
+  .v-overlay--leave .v-overlay__scrim {
+    animation: overlay-leave 0.3s cubic-bezier(0.4, 0, 0.2, 1) both;
+  }
+
+  @keyframes overlay-enter {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  @keyframes overlay-leave {
+    from {
+      opacity: 1;
+    }
+    to {
+      opacity: 0;
+    }
+  }
+
+  .v-dialog--enter {
+    animation: dialog-enter 225ms cubic-bezier(0, 0, 0.2, 1) both;
+  }
+
+  .v-dialog--leave {
+    animation: dialog-leave 125ms cubic-bezier(0.4, 0, 1, 1) both;
+  }
+
+  @keyframes dialog-enter {
+    from {
+      opacity: 0;
+      transform: scale(0.9);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+
+  @keyframes dialog-leave {
+    from {
+      opacity: 1;
+      transform: none;
+    }
+    to {
+      opacity: 0;
+      transform: scale(0.9);
+    }
+  }
+
+  .v-dialog--bottom.v-dialog--enter {
+    animation-name: dialog-bottom-enter;
+  }
+
+  .v-dialog--bottom.v-dialog--leave {
+    animation-name: dialog-bottom-leave;
+  }
+
+  @keyframes dialog-bottom-enter {
+    from {
+      transform: translateY(calc(50vh + 50%));
+    }
+    to {
+      transform: none;
+    }
+  }
+
+  @keyframes dialog-bottom-leave {
+    from {
+      transform: none;
+    }
+    to {
+      transform: translateY(calc(50vh + 50%));
+    }
   }
 
   .v-dialog--fullscreen {
@@ -1126,17 +1290,6 @@
     border-radius: 0;
     display: flex;
     flex-direction: column;
-  }
-
-  @keyframes dialog-in {
-    from {
-      opacity: 0;
-      transform: scale(0.97) translateY(6px);
-    }
-    to {
-      opacity: 1;
-      transform: none;
-    }
   }
 
   /* ==================== 标签页 ==================== */
@@ -1202,6 +1355,105 @@
     100% {
       background-position: 0 50%;
     }
+  }
+
+  /* 上游 HomeSkeleton.vue */
+  .skeleton-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 16px;
+  }
+
+  .skeleton-card {
+    border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity, 0.12));
+    border-radius: 12px;
+    padding: 16px;
+  }
+
+  .skeleton-heading {
+    height: 24px;
+    width: 60%;
+    background: rgba(var(--v-theme-on-surface), 0.08);
+    border-radius: 4px;
+    margin-bottom: 12px;
+  }
+
+  .skeleton-line {
+    height: 14px;
+    width: 100%;
+    background: rgba(var(--v-theme-on-surface), 0.08);
+    border-radius: 4px;
+    margin-bottom: 8px;
+  }
+
+  .skeleton-line--short {
+    width: 40%;
+  }
+
+  .skeleton-btn {
+    height: 36px;
+    width: 100px;
+    background: rgba(var(--v-theme-on-surface), 0.08);
+    border-radius: 8px;
+  }
+
+  .skeleton-pulse {
+    animation: skeleton-pulse 1.5s ease-in-out infinite;
+  }
+
+  @keyframes skeleton-pulse {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.4;
+    }
+  }
+
+  /* 上游 Vuetify VRipple.css */
+  .v-ripple__container {
+    color: inherit;
+    border-radius: inherit;
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    left: 0;
+    top: 0;
+    overflow: hidden;
+    z-index: 0;
+    pointer-events: none;
+    contain: strict;
+  }
+
+  .v-ripple__animation {
+    color: inherit;
+    position: absolute;
+    top: 0;
+    left: 0;
+    border-radius: 50%;
+    background: currentColor;
+    opacity: 0;
+    pointer-events: none;
+    overflow: hidden;
+    will-change: transform, opacity;
+  }
+
+  .v-ripple__animation--enter {
+    transition: none;
+    opacity: 0;
+  }
+
+  .v-ripple__animation--in {
+    transition:
+      transform 0.25s cubic-bezier(0, 0, 0.2, 1),
+      opacity 0.1s cubic-bezier(0, 0, 0.2, 1);
+    opacity: calc(0.25 * var(--v-theme-overlay-multiplier));
+  }
+
+  .v-ripple__animation--out {
+    transition: opacity 0.3s cubic-bezier(0, 0, 0.2, 1);
+    opacity: 0;
   }
 
   .no-select {
@@ -1293,11 +1545,77 @@
   .grid-item {
     width: 100%;
     min-width: 0;
-    transition: all 0.2s ease;
+    transition:
+      transform 400ms cubic-bezier(0.05, 0.7, 0.1, 1),
+      opacity 200ms cubic-bezier(0.2, 0, 0, 1);
+    will-change: transform, opacity;
+    backface-visibility: hidden;
+  }
+
+  /* 上游 TransitionGroup name="grid" */
+  .grid-enter {
+    animation: grid-enter 0.5s ease both;
+  }
+
+  .grid-leave {
+    animation: grid-leave 0.5s ease both;
+  }
+
+  @keyframes grid-enter {
+    from {
+      opacity: 0;
+      transform: translateY(20px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+
+  @keyframes grid-leave {
+    from {
+      opacity: 1;
+      transform: none;
+    }
+    to {
+      opacity: 0;
+      transform: translateY(-20px);
+    }
+  }
+
+  /* 上游 TransitionGroup name="v-list" */
+  .v-list-enter {
+    animation: v-list-enter 0.3s ease both;
+  }
+
+  .v-list-leave {
+    animation: v-list-leave 0.3s ease both;
+  }
+
+  @keyframes v-list-enter {
+    from {
+      opacity: 0;
+      transform: translateX(-20px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+
+  @keyframes v-list-leave {
+    from {
+      opacity: 1;
+      transform: none;
+    }
+    to {
+      opacity: 0;
+      transform: translateX(20px);
+    }
   }
 
   .empty-subjects {
-    border-top: thin solid rgba(var(--v-border-color), var(--v-border-opacity));
+    border-top: 1px solid rgba(0, 0, 0, 0.12);
     padding-top: 1rem;
   }
 
@@ -1311,11 +1629,25 @@
   .empty-subject-card {
     cursor: pointer;
     opacity: 0.8;
-    transition: all 0.2s ease;
+    transition: all 250ms cubic-bezier(0.2, 0, 0, 1);
+  }
+
+  .empty-subject-card .v-card-title {
+    display: block;
+    min-height: 0;
+    font-size: 1rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .empty-subject-card .v-card-title + .v-card-text {
+    padding-top: 0;
   }
 
   .empty-subject-card:hover {
-    transform: scale(1.02);
+    transform: translateY(-4px) scale(1.02);
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.12);
     opacity: 1;
   }
 
@@ -1333,6 +1665,41 @@
 
   .anim-in {
     animation: anim-in 0.3s cubic-bezier(0.4, 0, 0.2, 1) both;
+  }
+
+  /* 上游 App.vue：router-view name="md3"（out-in） */
+  .route-view {
+    width: 100%;
+  }
+
+  .md3-enter {
+    animation: md3-enter 0.3s cubic-bezier(0.4, 0, 0.2, 1) both;
+  }
+
+  .md3-leave {
+    animation: md3-leave 0.3s cubic-bezier(0.4, 0, 0.2, 1) both;
+  }
+
+  @keyframes md3-enter {
+    from {
+      opacity: 0;
+      transform: translateX(0.5vw);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+
+  @keyframes md3-leave {
+    from {
+      opacity: 1;
+      transform: none;
+    }
+    to {
+      opacity: 0;
+      transform: translateX(-0.5vw);
+    }
   }
 
   @keyframes anim-in {
@@ -1449,8 +1816,6 @@
   /* ==================== 首页布局 ==================== */
   .main-window {
     width: 100%;
-    max-width: 1640px;
-    margin: 0 auto;
     padding: 16px;
   }
 
@@ -1484,6 +1849,31 @@
     line-height: 1.5;
   }
 
+  .attendance-area h2,
+  .attendance-area h3 {
+    transition: all 300ms cubic-bezier(0.2, 0, 0, 1);
+  }
+
+  /* 上游防烧屏卡片 */
+  .anti-burn-card {
+    animation: subtle-glow 4s infinite alternate;
+    transition: all 0.3s ease;
+  }
+
+  .anti-burn-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15) !important;
+  }
+
+  @keyframes subtle-glow {
+    0% {
+      box-shadow: 0 0 5px rgba(33, 150, 243, 0.1);
+    }
+    100% {
+      box-shadow: 0 0 15px rgba(33, 150, 243, 0.3);
+    }
+  }
+
   /* ==================== 时间卡片 ==================== */
   .time-card {
     transition: all 0.3s ease;
@@ -1492,6 +1882,187 @@
 
   .time-card:hover {
     transform: translateY(-2px);
+  }
+
+  .fullscreen-time-card {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+  }
+
+  .fullscreen-toolbar {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 10;
+    display: flex;
+    justify-content: center;
+    padding-top: 16px;
+  }
+
+  .fullscreen-tabs {
+    position: relative;
+    display: flex;
+    align-items: center;
+    border-radius: 16px;
+  }
+
+  .fullscreen-tabs .v-tab {
+    flex: 0 0 auto;
+    height: 48px;
+    padding: 0 20px;
+    border-radius: 8px 8px 0 0;
+  }
+
+  .fullscreen-tabs .v-tab-indicator {
+    position: absolute;
+    bottom: 0;
+    height: 2px;
+    border-radius: 2px 2px 0 0;
+    background: rgb(var(--v-theme-primary));
+  }
+
+  .fullscreen-time-body {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 0 24px;
+    user-select: none;
+  }
+
+  .fullscreen-time-display {
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+    font-size: clamp(4rem, 15vw, 12rem);
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: 8px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  .fullscreen-seconds {
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+    font-size: 0.45em;
+    vertical-align: baseline;
+    margin-left: 4px;
+    opacity: 0.5;
+  }
+
+  .fullscreen-date-line {
+    font-size: clamp(1rem, 3vw, 2.2rem);
+    opacity: 0.7;
+    letter-spacing: 2px;
+  }
+
+  .fullscreen-progress {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+
+  .fullscreen-extra {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .fullscreen-actions {
+    position: absolute;
+    bottom: 24px;
+    right: 24px;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    opacity: 0.5;
+    transition: opacity 0.3s ease;
+  }
+
+  .fullscreen-actions:hover {
+    opacity: 1;
+  }
+
+  .countdown-setup {
+    user-select: none;
+  }
+
+  .countdown-digit {
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+    font-size: clamp(3rem, 10vw, 8rem);
+    font-weight: 700;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+    min-width: 1.2em;
+    text-align: center;
+  }
+
+  .countdown-sep {
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+    font-size: clamp(3rem, 10vw, 8rem);
+    font-weight: 300;
+    line-height: 1;
+    opacity: 0.4;
+    padding-bottom: 1.8em;
+  }
+
+  .countdown-ended {
+    animation: pulse-red 1s ease-in-out infinite;
+  }
+
+  .stopwatch-laps {
+    max-height: 30vh;
+    overflow-y: auto;
+    width: min(90vw, 400px);
+  }
+
+  .stopwatch-laps-table {
+    width: 100%;
+    border-collapse: collapse;
+    background: transparent !important;
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+    font-variant-numeric: tabular-nums;
+    font-size: 0.875rem;
+  }
+
+  .stopwatch-laps-table th,
+  .stopwatch-laps-table td {
+    padding: 8px 16px;
+    text-align: left;
+    border-bottom: thin solid rgba(var(--v-border-color), var(--v-border-opacity));
+  }
+
+  .stopwatch-laps-table th {
+    font-weight: 500;
+    opacity: 0.7;
+  }
+
+  @keyframes pulse-red {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.3;
+    }
+  }
+
+  /* 上游 v-slide-y-transition */
+  .slide-y-enter {
+    animation: slide-y-enter 0.3s cubic-bezier(0.4, 0, 0.2, 1) both;
+  }
+
+  @keyframes slide-y-enter {
+    from {
+      opacity: 0;
+      transform: translateY(-15px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
   }
 
   .time-display,
@@ -1507,15 +2078,7 @@
   }
 
   .noise-side {
-    padding: 8px 12px;
-    border-radius: 12px;
-    background: rgba(var(--v-theme-surface-variant), 0.25);
-    transition: background 0.2s ease;
     cursor: pointer;
-  }
-
-  .noise-side:hover {
-    background: rgba(var(--v-theme-surface-variant), 0.5);
   }
 
   .noise-side-db {
@@ -1547,6 +2110,10 @@
     pointer-events: none;
   }
 
+  .toolbar-slide {
+    will-change: transform, opacity;
+  }
+
   .floating-toolbar {
     position: absolute;
     bottom: 24px;
@@ -1563,6 +2130,12 @@
     backdrop-filter: blur(12px);
     pointer-events: auto;
     transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    will-change: transform;
+  }
+
+  .floating-toolbar:hover {
+    transform: translateX(-50%) translateY(-4px);
+    background: rgba(30, 30, 30, 0.8) !important;
   }
 
   [data-theme='light'] .floating-toolbar {
@@ -1570,12 +2143,25 @@
     border-color: rgba(0, 0, 0, 0.08);
   }
 
+  [data-theme='light'] .floating-toolbar:hover {
+    background: rgba(255, 255, 255, 0.8) !important;
+  }
+
   .toolbar-btn {
     margin: 0 2px;
   }
 
   .toolbar-btn:hover {
+    background: rgba(255, 255, 255, 0.1) !important;
     transform: scale(1.05);
+  }
+
+  [data-theme='light'] .toolbar-btn:hover {
+    background: rgba(255, 255, 255, 0.3) !important;
+  }
+
+  .toolbar-btn:active {
+    transform: scale(0.95);
   }
 
   .side-action-btn {
@@ -1584,6 +2170,18 @@
     right: 24px;
     pointer-events: auto;
     z-index: 101;
+    animation: slide-x-reverse-enter 0.3s cubic-bezier(0.4, 0, 0.2, 1) both;
+  }
+
+  @keyframes slide-x-reverse-enter {
+    from {
+      opacity: 0;
+      transform: translateX(15px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
   }
 
   .date-picker-card {
@@ -1599,6 +2197,18 @@
     border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
     box-shadow: var(--v-elevation-8);
     overflow: hidden;
+    animation: date-picker-card-in 225ms cubic-bezier(0, 0, 0.2, 1) both;
+  }
+
+  @keyframes date-picker-card-in {
+    from {
+      opacity: 0;
+      transform: translateX(-50%) scale(0.9);
+    }
+    to {
+      opacity: 1;
+      transform: translateX(-50%);
+    }
   }
 
   .menu-backdrop {
@@ -1617,6 +2227,10 @@
     border-radius: 4px;
     background: rgb(var(--v-theme-surface));
     box-shadow: var(--v-elevation-8);
+  }
+
+  .v-menu {
+    animation: dialog-enter 225ms cubic-bezier(0, 0, 0.2, 1) both;
   }
 
   /* ==================== 设置页 ==================== */
@@ -1688,6 +2302,13 @@
     border-radius: 8px;
     background: rgb(var(--v-theme-surface));
     box-shadow: var(--v-elevation-2);
+    transition:
+      transform 0.2s,
+      box-shadow 0.2s;
+  }
+
+  .settings-card.v-card:hover {
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1) !important;
   }
 
   .settings-card.rounded-xl {
@@ -2009,6 +2630,14 @@
       inset: var(--appbar-h) 0 0;
       z-index: 1050;
       background: rgba(0, 0, 0, 0.32);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .settings-scrim.open {
+      opacity: 1;
+      pointer-events: auto;
     }
 
     .settings-content {
@@ -2363,7 +2992,6 @@
     border-radius: 4px;
     background: transparent;
     pointer-events: auto;
-    animation: snackbar-in 0.15s cubic-bezier(0, 0, 0.2, 1);
   }
 
   .v-snackbar__wrapper::before {
@@ -2422,6 +3050,15 @@
     padding: 0 8px;
   }
 
+  /* 上游 v-snackbar-transition */
+  .v-snackbar--enter {
+    animation: snackbar-in 0.15s cubic-bezier(0, 0, 0.2, 1) both;
+  }
+
+  .v-snackbar--leave {
+    animation: snackbar-out 0.15s cubic-bezier(0, 0, 0.2, 1) both;
+  }
+
   @keyframes snackbar-in {
     from {
       opacity: 0;
@@ -2430,6 +3067,15 @@
     to {
       opacity: 1;
       transform: none;
+    }
+  }
+
+  @keyframes snackbar-out {
+    from {
+      opacity: 1;
+    }
+    to {
+      opacity: 0;
     }
   }
 
@@ -2538,13 +3184,141 @@
   .date-picker-header {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    justify-content: center;
+    gap: 6px;
     padding: 4px 4px 8px;
   }
 
   .date-picker-title {
     font-size: 0.9375rem;
     font-weight: 500;
+  }
+
+  .date-picker-nav {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+  }
+
+  .date-picker-nav-btn {
+    width: 36px !important;
+    min-width: 0 !important;
+    height: 36px !important;
+  }
+
+  .date-picker-nav-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 4px;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: rgb(var(--v-theme-on-surface));
+    font-family: inherit;
+    font-size: 0.875rem;
+    font-weight: 500;
+    line-height: 1.4;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background-color 0.15s;
+  }
+
+  .date-picker-nav-label:hover {
+    background: rgba(var(--v-theme-on-surface), 0.08);
+  }
+
+  .date-picker-nav-caret {
+    opacity: 0.6;
+  }
+
+  .date-picker-panel {
+    padding: 2px 2px 4px;
+    animation: date-picker-panel-in 0.2s ease both;
+  }
+
+  @keyframes date-picker-panel-in {
+    from {
+      opacity: 0;
+      transform: translateY(-4px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+
+  .date-picker-panel-nav {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 2px 6px;
+  }
+
+  .date-picker-panel-range {
+    font-size: 0.8125rem;
+    color: rgba(var(--v-theme-on-surface), 0.7);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .date-picker-panel-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .date-picker-panel-item {
+    height: 38px;
+    padding: 0 8px;
+    border: 0;
+    border-radius: 19px;
+    background: transparent;
+    color: rgb(var(--v-theme-on-surface));
+    font-family: inherit;
+    font-size: 0.8125rem;
+    cursor: pointer;
+    transition:
+      background-color 0.15s,
+      color 0.15s;
+  }
+
+  .date-picker-panel-item:hover {
+    background: rgba(var(--v-theme-on-surface), 0.08);
+  }
+
+  .date-picker-panel-item.active {
+    background: rgb(var(--v-theme-primary));
+    color: #fff;
+  }
+
+  .date-picker-month {
+    animation: date-picker-next 0.3s cubic-bezier(0.4, 0, 0.2, 1) both;
+  }
+
+  .date-picker-month.picker-prev {
+    animation-name: date-picker-prev;
+  }
+
+  @keyframes date-picker-next {
+    from {
+      opacity: 0;
+      transform: translateX(100%);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+
+  @keyframes date-picker-prev {
+    from {
+      opacity: 0;
+      transform: translateX(-100%);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
   }
 
   .date-picker-weekdays {
@@ -2964,7 +3738,6 @@
       min-width: 0 !important;
       justify-content: flex-start;
       gap: 8px;
-      padding: 4px 8px;
     }
 
     .time-card .noise-side .text-caption {

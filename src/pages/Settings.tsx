@@ -170,7 +170,10 @@ export function SettingsPage({
           </div>
         </nav>
 
-        {drawerOpen && <div className="settings-scrim" onClick={() => setDrawerOpen(false)} />}
+        <div
+          className={`settings-scrim ${drawerOpen ? 'open' : ''}`}
+          onClick={() => setDrawerOpen(false)}
+        />
 
         <div className="settings-content">
           {active === 'home' && (

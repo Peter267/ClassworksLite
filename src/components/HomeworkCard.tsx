@@ -23,6 +23,15 @@ function trackGlow(event: React.MouseEvent<HTMLElement>) {
   card.style.setProperty('--y', `${((event.clientY - rect.top) / rect.height) * 100}%`)
 }
 
+function trackGlowTouch(event: React.TouchEvent<HTMLElement>) {
+  if (event.touches.length !== 1) return
+  const touch = event.touches[0]
+  const card = event.currentTarget
+  const rect = card.getBoundingClientRect()
+  card.style.setProperty('--x', `${((touch.clientX - rect.left) / rect.width) * 100}%`)
+  card.style.setProperty('--y', `${((touch.clientY - rect.top) / rect.height) * 100}%`)
+}
+
 /** 作业卡片：v-card + v-card-title + v-list（对齐 HomeworkGrid.vue） */
 export const HomeworkCard = memo(function HomeworkCard({
   name,
@@ -45,6 +54,7 @@ export const HomeworkCard = memo(function HomeworkCard({
           if (!disabled) onOpen()
         }}
         onMouseMove={trackGlow}
+        onTouchMove={trackGlowTouch}
       >
         <div className="v-card-title text-primary">
           <Icon name="cardText" size={18} className="mr-2" />
@@ -69,12 +79,17 @@ export const HomeworkCard = memo(function HomeworkCard({
         if (!disabled) onOpen()
       }}
       onMouseMove={trackGlow}
+      onTouchMove={trackGlowTouch}
     >
       <div className="v-card-title">{name}</div>
       <div className="v-card-text" style={{ fontSize }}>
         <div className="v-list">
           {lines.map((line, index) => (
-            <div className="v-list-item" key={`${index}-${line}`} style={{ minHeight: 32 }}>
+            <div
+              className="v-list-item homework-line"
+              key={`${index}-${line}`}
+              style={{ minHeight: 32 }}
+            >
               <div
                 className="v-list-item-title"
                 style={{ lineHeight: 1.55, fontSize, overflowWrap: 'anywhere' }}
@@ -92,17 +107,24 @@ export const HomeworkCard = memo(function HomeworkCard({
 interface EmptySubjectProps {
   name: string
   variant: 'card' | 'button' | 'chip'
+  animationClass?: string
   disabled?: boolean
   onOpen: () => void
 }
 
 /** 无作业科目：移动端 chip / 按钮组 / 卡片（对齐 display.emptySubjectDisplay） */
-export function EmptySubjectCard({ name, variant, disabled, onOpen }: EmptySubjectProps) {
+export function EmptySubjectCard({
+  name,
+  variant,
+  animationClass = '',
+  disabled,
+  onOpen,
+}: EmptySubjectProps) {
   if (variant === 'chip') {
     return (
       <button
         type="button"
-        className="v-chip v-chip--variant-tonal"
+        className={`v-chip v-chip--variant-tonal ${animationClass}`}
         data-color="primary"
         style={{ margin: 4, cursor: 'pointer', border: 'none' }}
         onClick={onOpen}
@@ -117,7 +139,8 @@ export function EmptySubjectCard({ name, variant, disabled, onOpen }: EmptySubje
     return (
       <button
         type="button"
-        className="v-btn v-btn--variant-tonal"
+        className={`v-btn v-btn--variant-tonal ${animationClass}`}
+        data-color="primary"
         style={{ borderRadius: 0 }}
         disabled={disabled}
         onClick={onOpen}
@@ -131,8 +154,8 @@ export function EmptySubjectCard({ name, variant, disabled, onOpen }: EmptySubje
   return (
     <button
       type="button"
-      className="v-card border rounded-xl empty-subject-card"
-      style={{ textAlign: 'left', padding: 0, background: 'transparent' }}
+      className={`v-card border rounded-xl empty-subject-card ${animationClass}`}
+      style={{ textAlign: 'left', padding: 0 }}
       disabled={disabled}
       onClick={onOpen}
     >
