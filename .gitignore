@@ -19,3 +19,4 @@ _reference
 
 # Agent workspace data (audit scripts, screenshots, memory)
 .workbuddy/
+.mimosa/

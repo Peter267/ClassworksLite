@@ -1,15 +1,9 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { MdiIcon } from './MdiIcon'
 import { Modal } from './ui/Modal'
+import { toDateKey } from '../lib/date'
 import { useAppState, useMediaQuery, useSetting } from '../lib/hooks'
 import { attendanceStats, store, type AttendanceKind } from '../lib/store'
-import { toast } from '../lib/toast'
-
-const KIND_META: Record<AttendanceKind, { label: string; color: string; bg: string }> = {
-  absent: { label: '请假', color: 'rgb(var(--v-theme-error))', bg: 'rgba(var(--v-theme-error), 0.12)' },
-  late: { label: '迟到', color: 'rgb(var(--v-theme-warning))', bg: 'rgba(var(--v-theme-warning), 0.12)' },
-  exclude: { label: '不参与', color: 'rgb(var(--v-theme-grey))', bg: 'rgba(var(--v-theme-surface-variant), 0.5)' },
-}
 
 /** 历史看板可能保留已从花名册删除的姓名，展示时按当前名单过滤 */
 function visibleAttendance(students: string[], attendance: { absent: string[]; late: string[]; exclude: string[] }) {
@@ -179,6 +173,24 @@ export function AttendanceCard({ onOpen }: { onOpen: () => void }) {
 
 /* ------------------------------------------------------------------ */
 
+/** 状态过滤项：对齐 AttendanceManagementDialog.vue 的 filter chips */
+const STATUS_FILTERS = [
+  { value: 'present', label: '到课', color: 'success', icon: 'account-check' },
+  { value: 'absent', label: '请假', color: 'error', icon: 'account-off' },
+  { value: 'late', label: '迟到', color: 'warning', icon: 'clock-alert' },
+  { value: 'exclude', label: '不参与', color: 'grey', icon: 'account-cancel' },
+] as const
+
+type StatusFilter = (typeof STATUS_FILTERS)[number]['value']
+
+const statusMeta: Record<StatusFilter, { color: string; icon: string }> = {
+  present: { color: 'success', icon: 'account-check' },
+  absent: { color: 'error', icon: 'account-off' },
+  late: { color: 'warning', icon: 'clock-alert' },
+  exclude: { color: 'grey', icon: 'account-cancel' },
+}
+
+/** 考勤登记对话框：对齐 AttendanceManagementDialog.vue（搜索 + 姓氏筛选 + 过滤器 + 卡片网格 + 批量操作） */
 export function AttendanceDialog({
   open,
   onClose,
@@ -192,138 +204,262 @@ export function AttendanceDialog({
 }) {
   const state = useAppState()
   const [query, setQuery] = useState('')
+  const [filters, setFilters] = useState<StatusFilter[]>([])
+  const isMobile = useMediaQuery('(max-width: 599px)')
   const { absent, late, exclude } = state.board.attendance
 
-  const statusOf = (name: string): AttendanceKind | 'present' =>
+  useEffect(() => {
+    if (open) {
+      setQuery('')
+      setFilters([])
+    }
+  }, [open])
+
+  const statusOf = (name: string): StatusFilter =>
     absent.includes(name) ? 'absent' : late.includes(name) ? 'late' : exclude.includes(name) ? 'exclude' : 'present'
 
+  /** 与上游一致：按搜索词 + 姓氏 + 状态过滤 */
   const filtered = useMemo(() => {
-    const q = query.trim()
-    return q ? state.students.filter((name) => name.includes(q)) : state.students
-  }, [query, state.students])
-
-  const toggle = (name: string, kind: AttendanceKind) => {
-    if (!canEdit) {
-      onBlocked()
-      return
+    let students = state.students
+    const q = query.trim().toLowerCase()
+    if (q) students = students.filter((name) => name.toLowerCase().includes(q))
+    if (filters.length > 0) {
+      students = students.filter((name) => filters.includes(statusOf(name)))
     }
-    store.toggleAttendance(name, kind)
+    return students
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query, filters, state.students, absent, late, exclude])
+
+  /** 姓氏统计：对齐 extractedSurnames（按拼音序） */
+  const surnames = useMemo(() => {
+    const map = new Map<string, number>()
+    for (const name of state.students) {
+      if (!name) continue
+      map.set(name.charAt(0), (map.get(name.charAt(0)) ?? 0) + 1)
+    }
+    return Array.from(map.entries())
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))
+  }, [state.students])
+
+  const toggleFilter = (value: StatusFilter) => {
+    setFilters((current) =>
+      current.includes(value) ? current.filter((item) => item !== value) : [...current, value],
+    )
   }
 
-  const bulk = async (kind: AttendanceKind | 'reset') => {
+  /** 设置单个学生状态：present 表示从所有名单移除 */
+  const setStatus = (name: string, target: StatusFilter) => {
     if (!canEdit) {
       onBlocked()
       return
     }
-    if (kind === 'reset') {
-      if (store.clearAttendance()) toast.success('已重置', '全员出席')
+    if (target === 'present') {
+      for (const kind of ['absent', 'late', 'exclude'] as AttendanceKind[]) {
+        if (state.board.attendance[kind].includes(name)) store.toggleAttendance(name, kind)
+      }
       return
     }
-    store.setAttendance(kind, state.students)
+    if (!state.board.attendance[target].includes(name)) store.toggleAttendance(name, target)
+  }
+
+  const setAll = (target: StatusFilter) => {
+    if (!canEdit) {
+      onBlocked()
+      return
+    }
+    if (target === 'present') {
+      store.clearAttendance()
+      return
+    }
+    store.setAttendance(target, state.students)
   }
 
   return (
     <Modal
       open={open}
       onClose={onClose}
-      title="登记出勤"
-      subtitle={`共 ${state.students.length} 人 · 点击姓名右侧按钮标记状态，再次点击取消`}
-      width={620}
+      title={
+        <span className="d-flex align-center w-full">
+          <MdiIcon name="account-group" size={24} className="mr-2" />
+          考勤
+          {!isMobile && (
+            <span className="v-chip v-chip--size-small v-chip--variant-tonal ml-2" data-color="primary">
+              {toDateKey(state.date)}
+            </span>
+          )}
+        </span>
+      }
+      width={900}
       fullscreenOnMobile
       footer={
         <>
+          <hr className="v-divider" style={{ margin: '0 0 8px' }} />
+          <div className="flex-grow-1" />
           <button
             type="button"
-            className="btn btn-ghost"
-            onClick={() => void bulk('reset')}
-            disabled={!canEdit}
-          >
-            全部出席
-          </button>
-          <div className="flex-1" />
-          <button
-            type="button"
-            className="btn btn-primary"
+            className="v-btn"
+            data-color="primary"
             onClick={async () => {
               const saved = await store.save({ silent: true })
               if (saved) onClose()
             }}
           >
-            完成
+            <MdiIcon name="content-save" size={18} />
+            保存
           </button>
         </>
       }
     >
-      <div className="sticky top-0 z-10 -mx-1 px-1 pb-2" style={{ background: 'var(--surface)' }}>
-        <div className="relative">
-          <span
-            className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2"
-            style={{ color: 'var(--text-3)' }}
-          >
-            <MdiIcon name="magnify" size={15} />
-          </span>
+      {/* 搜索 + 姓氏筛选 */}
+      <div className="mb-4">
+        <div className="v-field">
+          <MdiIcon
+            name="magnify"
+            size={20}
+            className="pointer-events-none mr-2"
+            style={{ color: 'rgba(var(--v-theme-on-surface), 0.5)' }}
+          />
           <input
-            className="field pl-9"
-            placeholder="搜索学生姓名"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
+            placeholder="搜索学生"
+            aria-label="搜索学生"
+            style={{
+              flex: '1 1 auto',
+              minWidth: 0,
+              border: 'none',
+              outline: 'none',
+              background: 'transparent',
+              color: 'inherit',
+              font: 'inherit',
+            }}
           />
-        </div>
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {(Object.keys(KIND_META) as AttendanceKind[]).map((kind) => (
+          {query && (
             <button
-              key={kind}
               type="button"
-              className="btn btn-outline btn-sm"
-              onClick={() => void bulk(kind)}
-              disabled={!canEdit}
+              className="v-btn v-btn--icon v-btn--variant-text"
+              style={{ width: 28, height: 28, minWidth: 28 }}
+              onClick={() => setQuery('')}
+              aria-label="清空搜索"
             >
-              全员{KIND_META[kind].label}
+              <MdiIcon name="close" size={18} />
             </button>
-          ))}
+          )}
         </div>
+        <div className="text-caption" style={{ opacity: 0.7, marginTop: 2 }}>
+          支持筛选姓氏，如输入&apos;孙&apos;可筛选所有姓孙的学生
+        </div>
+        {surnames.length > 0 && (
+          <div className="d-flex flex-wrap mt-2" style={{ gap: 4 }}>
+            {surnames.map((surname) => {
+              const active = query === surname.name
+              return (
+                <button
+                  key={surname.name}
+                  type="button"
+                  className={`v-btn ${active ? 'v-btn--variant-elevated' : 'v-btn--variant-text'}`}
+                  data-color={active ? 'primary' : undefined}
+                  onClick={() => setQuery(active ? '' : surname.name)}
+                >
+                  {surname.name} ({surname.count})
+                </button>
+              )
+            })}
+          </div>
+        )}
       </div>
 
-      <ul className="m-0 list-none divide-y p-0" style={{ borderColor: 'var(--border)' }}>
-        {filtered.map((name) => {
-          const status = statusOf(name)
+      {/* 状态过滤器 */}
+      <div className="d-flex flex-wrap mb-4" style={{ gap: 8 }}>
+        {STATUS_FILTERS.map((item) => {
+          const active = filters.includes(item.value)
           return (
-            <li
-              key={name}
-              className="flex items-center gap-2 py-2"
-              style={{ borderTop: '1px solid var(--border)' }}
+            <button
+              key={item.value}
+              type="button"
+              className={`v-chip filter-chip px-2 v-chip--variant-${active ? 'elevated' : 'tonal'}`}
+              data-color={item.color}
+              onClick={() => toggleFilter(item.value)}
             >
-              <span className="min-w-0 flex-1 truncate text-[14px]">{name}</span>
-              <div className="flex shrink-0 gap-1">
-                {(Object.keys(KIND_META) as AttendanceKind[]).map((kind) => {
-                  const active = status === kind
-                  const meta = KIND_META[kind]
-                  return (
-                    <button
-                      key={kind}
-                      type="button"
-                      onClick={() => toggle(name, kind)}
-                      className="rounded-[8px] px-2 py-1 text-[12px] font-medium transition-colors"
-                      style={
-                        active
-                          ? { background: meta.bg, color: meta.color, boxShadow: `inset 0 0 0 1px ${meta.color}` }
-                          : { background: 'var(--surface-2)', color: 'var(--text-3)' }
-                      }
-                    >
-                      {meta.label}
-                    </button>
-                  )
-                })}
-              </div>
-            </li>
+              <MdiIcon name={item.icon} size={18} />
+              {item.label}
+              {active && <MdiIcon name="check" size={18} />}
+            </button>
           )
         })}
-        {filtered.length === 0 && (
-          <li className="py-10 text-center text-[13px]" style={{ color: 'var(--text-3)' }}>
-            未找到学生
-          </li>
-        )}
-      </ul>
+      </div>
+
+      {/* 学生列表 */}
+      <div className="attendance-student-grid">
+        {filtered.map((name) => {
+          const status = statusOf(name)
+          const meta = statusMeta[status]
+          const iconBtnClass = `v-btn v-btn--icon v-btn--variant-text ${
+            isMobile ? '' : 'v-btn--size-small'
+          }`
+          return (
+            <div key={name} className="v-card border student-card">
+              <div className="d-flex align-center" style={{ padding: 8 }}>
+                <span
+                  className="v-avatar mr-2"
+                  data-color={meta.color}
+                  style={{ width: 24, height: 24 }}
+                >
+                  <MdiIcon name={meta.icon} size={16} />
+                </span>
+                <span
+                  className="text-subtitle-1 flex-grow-1"
+                  style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                >
+                  {name}
+                </span>
+                <div className="d-flex attendance-actions">
+                  {STATUS_FILTERS.map((item) => {
+                    const active = status === item.value
+                    return (
+                      <button
+                        key={item.value}
+                        type="button"
+                        className={iconBtnClass}
+                        data-color={active ? item.color : undefined}
+                        title={`设为${item.label}`}
+                        onClick={() => setStatus(name, item.value)}
+                      >
+                        <MdiIcon name={item.icon} size={18} />
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      {/* 批量操作 */}
+      <div
+        className="v-card v-card--variant-tonal mt-4 mb-4"
+        data-color="primary"
+      >
+        <div style={{ padding: 16 }}>
+          <div className="text-subtitle-2 mb-2">批量操作</div>
+          <div className="d-flex flex-wrap" style={{ gap: 8 }}>
+            {STATUS_FILTERS.map((item) => (
+              <button
+                key={item.value}
+                type="button"
+                className="v-btn flex-grow-1"
+                data-color={item.color}
+                onClick={() => setAll(item.value)}
+              >
+                <MdiIcon name={item.icon} size={18} />
+                {item.value === 'present' ? '全部到齐' : `全部${item.label}`}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
     </Modal>
   )
 }

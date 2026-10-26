@@ -610,6 +610,13 @@
     border-radius: 50%;
   }
 
+  .v-btn--icon.v-btn--size-small,
+  .v-btn--size-small.v-btn--icon {
+    width: 28px;
+    min-width: 28px;
+    height: 28px;
+  }
+
   .v-btn--size-x-large.v-btn--icon {
     width: 52px;
     min-width: 52px;
@@ -640,6 +647,15 @@
 
   .v-btn--variant-outlined {
     border: thin solid rgba(var(--v-border-color), var(--v-border-opacity));
+  }
+
+  .v-btn--variant-outlined[data-color='error'] {
+    background: transparent;
+    color: rgb(var(--v-theme-error));
+    border-color: rgba(var(--v-theme-error), 0.5);
+  }
+  .v-btn--variant-outlined[data-color='error']:hover:not(:disabled) {
+    background: rgba(var(--v-theme-error), 0.08);
   }
 
   /* 语义色按钮 */
@@ -746,6 +762,28 @@
     color: rgb(var(--v-theme-indigo));
   }
 
+  /* 彩色文字按钮（图标操作列）：对齐 Vuetify text variant + color */
+  .v-btn--variant-text[data-color='success'] {
+    background: transparent;
+    color: rgb(var(--v-theme-success));
+  }
+  .v-btn--variant-text[data-color='error'] {
+    background: transparent;
+    color: rgb(var(--v-theme-error));
+  }
+  .v-btn--variant-text[data-color='warning'] {
+    background: transparent;
+    color: rgb(var(--v-theme-warning));
+  }
+  .v-btn[data-color='grey'] {
+    background: rgb(var(--v-theme-grey));
+    color: #fff;
+  }
+  .v-btn--variant-text[data-color='grey'] {
+    background: transparent;
+    color: rgb(var(--v-theme-grey));
+  }
+
   /* 按钮组 */
   .v-btn-group {
     display: inline-flex;
@@ -843,6 +881,125 @@
   .v-chip--variant-outlined {
     background: transparent;
     border: thin solid rgba(var(--v-border-color), var(--v-border-opacity));
+  }
+  .v-chip--variant-elevated[data-color='success'] {
+    background: rgb(var(--v-theme-success));
+    color: #fff;
+  }
+  .v-chip--variant-elevated[data-color='error'] {
+    background: rgb(var(--v-theme-error));
+    color: #fff;
+  }
+  .v-chip--variant-elevated[data-color='warning'] {
+    background: rgb(var(--v-theme-warning));
+    color: #000;
+  }
+  .v-chip--variant-elevated[data-color='grey'] {
+    background: rgb(var(--v-theme-grey));
+    color: #fff;
+  }
+  .filter-chip {
+    cursor: pointer;
+  }
+
+  /* ==================== 头像 ==================== */
+  .v-avatar {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    border-radius: 50%;
+    line-height: normal;
+    color: #fff;
+  }
+  .v-avatar[data-color='success'] {
+    background: rgb(var(--v-theme-success));
+  }
+  .v-avatar[data-color='error'] {
+    background: rgb(var(--v-theme-error));
+  }
+  .v-avatar[data-color='warning'] {
+    background: rgb(var(--v-theme-warning));
+    color: #000;
+  }
+  .v-avatar[data-color='grey'] {
+    background: rgb(var(--v-theme-grey));
+  }
+
+  /* 卡片 tonal 变体（考勤批量操作区） */
+  .v-card--variant-tonal[data-color='primary'] {
+    background: rgba(var(--v-theme-primary), 0.12);
+  }
+
+  /* 考勤 / 学生管理卡片网格：对齐上游 v-col 断点 */
+  .attendance-student-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+  .student-manage-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+  .student-card {
+    transition: all 0.2s ease;
+  }
+  .student-card .action-buttons {
+    opacity: 0;
+    transition: opacity 0.2s ease;
+  }
+  .student-card:hover .action-buttons,
+  .student-card.is-mobile .action-buttons {
+    opacity: 1;
+  }
+  .student-card .student-menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    z-index: 20;
+    min-width: 120px;
+    padding: 4px 0;
+    border-radius: 8px;
+    background: rgb(var(--v-theme-surface));
+    box-shadow: var(--v-elevation-4);
+  }
+  .student-card .student-menu .v-list {
+    padding: 0;
+  }
+  .student-name-input {
+    flex: 1 1 auto;
+    min-width: 0;
+    border: none;
+    border-bottom: 2px solid rgb(var(--v-theme-primary));
+    outline: none;
+    background: transparent;
+    color: inherit;
+    font-size: 1rem;
+  }
+  .v-dialog.dialog-unsaved {
+    border: thin solid rgb(var(--v-theme-warning));
+  }
+  @media (min-width: 600px) {
+    .attendance-student-grid {
+      grid-template-columns: repeat(2, 1fr);
+    }
+    .student-manage-grid {
+      grid-template-columns: repeat(2, 1fr);
+    }
+  }
+  @media (min-width: 960px) {
+    .attendance-student-grid {
+      grid-template-columns: repeat(3, 1fr);
+    }
+    .student-manage-grid {
+      grid-template-columns: repeat(3, 1fr);
+    }
+  }
+  @media (min-width: 1280px) {
+    .student-manage-grid {
+      grid-template-columns: repeat(4, 1fr);
+    }
   }
 
   /* ==================== 列表 ==================== */
@@ -2005,7 +2162,6 @@
     font-weight: 300;
     line-height: 1;
     opacity: 0.4;
-    padding-bottom: 1.8em;
   }
 
   .countdown-ended {

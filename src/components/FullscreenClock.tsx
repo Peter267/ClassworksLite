@@ -398,15 +398,13 @@ export function FullscreenClock({ open, onClose }: { open: boolean; onClose: () 
                           max: 59,
                           set: setCountdownSeconds,
                         },
-                      ].map((part, index) => (
-                        <div className="d-flex align-center" style={{ gap: 16 }} key={part.unit}>
-                          <div className="text-center">
+                      ].flatMap((part, index) => {
+                        const column = (
+                          <div className="text-center" key={part.unit}>
                             <button
                               type="button"
                               className="v-btn v-btn--icon v-btn--variant-text v-btn--size-small"
-                              onClick={() =>
-                                part.set((value) => Math.min(part.max, value + 1))
-                              }
+                              onClick={() => part.set((value) => Math.min(part.max, value + 1))}
                               aria-label={`增加${part.unit}`}
                             >
                               <Icon name="up" size={20} />
@@ -422,9 +420,11 @@ export function FullscreenClock({ open, onClose }: { open: boolean; onClose: () 
                             </button>
                             <div className="text-caption text-medium-emphasis">{part.unit}</div>
                           </div>
-                          {index < 2 && <div className="countdown-sep">:</div>}
-                        </div>
-                      ))}
+                        )
+                        return index < 2
+                          ? [column, <div className="countdown-sep" key={`sep-${part.unit}`}>:</div>]
+                          : [column]
+                      })}
                     </div>
 
                     <div className="mt-8 d-flex flex-wrap justify-center" style={{ gap: 12 }}>

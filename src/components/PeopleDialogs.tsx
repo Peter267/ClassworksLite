@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Icon } from './Icon'
+import { MdiIcon } from './MdiIcon'
 import { Modal } from './ui/Modal'
-import { useAppState } from '../lib/hooks'
+import { useAppState, useMediaQuery } from '../lib/hooks'
 import { store } from '../lib/store'
 import { toast } from '../lib/toast'
 
@@ -16,188 +17,368 @@ export function parseNames(raw: string): string[] {
 
 export function StudentsDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const state = useAppState()
-  const [mode, setMode] = useState<'list' | 'bulk'>('list')
-  const [draft, setDraft] = useState('')
-  const [bulkText, setBulkText] = useState('')
-  const [query, setQuery] = useState('')
-  /** 打开批量编辑时的名单基准，用于合并「批量文本之外的增删」（D6） */
-  const bulkBase = useRef<string[]>([])
+  /** 草稿名单：与上游一致，改动不落库，点「保存名单」才提交 */
+  const [list, setList] = useState<string[]>([])
+  const [text, setText] = useState('')
+  const [advanced, setAdvanced] = useState(false)
+  const [newName, setNewName] = useState('')
+  const [editIndex, setEditIndex] = useState(-1)
+  const [editName, setEditName] = useState('')
+  const [menuIndex, setMenuIndex] = useState(-1)
+  const savedList = useRef<string[]>([])
+  const isMobile = useMediaQuery('(max-width: 959px)')
+
+  const pinyinCollator = useMemo(() => {
+    try {
+      return new Intl.Collator('zh-Hans-CN-u-co-pinyin')
+    } catch {
+      return new Intl.Collator('zh')
+    }
+  }, [])
 
   useEffect(() => {
     if (open) {
-      setBulkText(state.students.join('\n'))
-      bulkBase.current = state.students
-      setDraft('')
-      setQuery('')
-      setMode('list')
+      setList([...state.students])
+      savedList.current = [...state.students]
+      setText(state.students.join('\n'))
+      setAdvanced(false)
+      setNewName('')
+      setEditIndex(-1)
+      setMenuIndex(-1)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
 
-  const enterBulk = () => {
-    // 进入批量编辑时用当前最新名单初始化，避免用打开弹窗时的旧文本覆盖刚做的增删
-    bulkBase.current = state.students
-    setBulkText(state.students.join('\n'))
-    setMode('bulk')
+  /* 序号菜单打开时，点击任意处关闭 */
+  useEffect(() => {
+    if (menuIndex === -1) return
+    const close = () => setMenuIndex(-1)
+    window.addEventListener('click', close)
+    return () => window.removeEventListener('click', close)
+  }, [menuIndex])
+
+  const unsavedChanges =
+    list.length !== savedList.current.length || list.some((name, i) => name !== savedList.current[i])
+
+  const addStudent = () => {
+    const name = newName.trim()
+    if (!name || list.includes(name)) return
+    setList([...list, name])
+    setNewName('')
   }
 
-  const filtered = useMemo(
-    () => (query ? state.students.filter((name) => name.includes(query)) : state.students),
-    [state.students, query],
-  )
-
-  const add = () => {
-    const names = parseNames(draft)
-    if (names.length === 0) return
-    void store.addStudents(names)
-    setDraft('')
+  const saveEdit = () => {
+    if (editIndex !== -1) {
+      const trimmed = editName.trim()
+      if (trimmed && trimmed !== list[editIndex]) {
+        const next = [...list]
+        next[editIndex] = trimmed
+        setList(next)
+      }
+      setEditIndex(-1)
+      setEditName('')
+    }
   }
 
-  const remove = (name: string) => {
-    void store.removeStudent(name)
+  const removeStudent = (index: number) => {
+    setList(list.filter((_, i) => i !== index))
+  }
+
+  const moveStudent = (index: number, direction: 'top' | 'up' | 'down') => {
+    if (direction === 'top') {
+      if (index <= 0) return
+      setList([list[index], ...list.slice(0, index), ...list.slice(index + 1)])
+      return
+    }
+    const target = direction === 'up' ? index - 1 : index + 1
+    if (target < 0 || target >= list.length) return
+    const next = [...list]
+    ;[next[index], next[target]] = [next[target], next[index]]
+    setList(next)
+  }
+
+  const sortStudentsByPinyin = () => {
+    setList([...list].sort((a, b) => pinyinCollator.compare(a, b)))
+  }
+
+  const toggleAdvanced = () => {
+    // 与上游 watcher 一致：进入高级模式时用当前草稿生成文本
+    if (!advanced) setText(list.join('\n'))
+    setAdvanced(!advanced)
+  }
+
+  const reloadStudents = () => {
+    setList([...state.students])
+    savedList.current = [...state.students]
+    setText(state.students.join('\n'))
+    setEditIndex(-1)
+  }
+
+  const saveStudents = async () => {
+    const names = advanced ? parseNames(text) : list.map((name) => name.trim()).filter(Boolean)
+    if (names.length === 0) {
+      toast.warning('名单为空', '至少保留一位学生')
+      return
+    }
+    const saved = await store.setStudents(names)
+    if (!saved) return
+    setList(names)
+    savedList.current = [...names]
+    setText(names.join('\n'))
+    toast.success('保存成功', '学生列表已更新')
   }
 
   return (
     <Modal
       open={open}
       onClose={onClose}
-      title="学生名单"
-      subtitle={`共 ${state.students.length} 人 · 名单会同步到出勤统计与随机点名`}
-      width={620}
-      fullscreenOnMobile
-      footer={
-        <>
-          <button
-            type="button"
-            className="btn btn-ghost"
-            onClick={() => (mode === 'list' ? enterBulk() : setMode('list'))}
-          >
-            <Icon name="edit" size={14} />
-            {mode === 'list' ? '批量编辑' : '返回列表'}
-          </button>
-          <div className="flex-1" />
-          {mode === 'bulk' ? (
-            <button
-              type="button"
-              className="btn btn-primary"
-              onClick={() => {
-                void (async () => {
-                  const names = parseNames(bulkText)
-                  if (names.length === 0) {
-                    toast.warning('名单为空', '至少保留一位学生')
-                    return
-                  }
-                  // 只应用批量文本相对基准的增删，保留弹窗内其它入口刚做的修改
-                  const base = bulkBase.current
-                  const current = state.students
-                  const removed = new Set(base.filter((name) => !names.includes(name)))
-                  const merged = current.filter((name) => !removed.has(name))
-                  for (const name of names) {
-                    if (!merged.includes(name)) merged.push(name)
-                  }
-                  if (merged.length === 0) {
-                    toast.warning('名单为空', '至少保留一位学生')
-                    return
-                  }
-                  const saved = await store.setStudents(merged)
-                  if (!saved) return
-                  bulkBase.current = merged
-                  setMode('list')
-                  toast.success('已保存', `共 ${merged.length} 人`)
-                })()
-              }}
-            >
-              保存名单
-            </button>
-          ) : (
-            <button type="button" className="btn btn-primary" onClick={onClose}>
-              完成
-            </button>
+      title={
+        <span className="d-flex align-center">
+          <MdiIcon name="account-group" size={24} className="mr-2" />
+          学生列表
+          {unsavedChanges && (
+            <span className="v-chip v-chip--size-small v-chip--variant-tonal ml-2" data-color="warning">
+              <MdiIcon name="alert" size={16} />
+              有未保存的更改
+            </span>
           )}
-        </>
+        </span>
       }
+      width={1080}
+      fullscreenOnMobile
+      className={unsavedChanges ? 'dialog-unsaved' : ''}
     >
-      {mode === 'list' ? (
-        <>
-          <div className="flex gap-2">
-            <input
-              className="field"
-              placeholder="输入姓名后回车添加，支持一次粘贴多个"
-              value={draft}
-              onChange={(event) => setDraft(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') {
-                  event.preventDefault()
-                  add()
-                }
-              }}
-            />
-            <button type="button" className="btn btn-tonal shrink-0" onClick={add}>
-              <Icon name="plus" size={15} />
-              添加
-            </button>
-          </div>
+      {/* 顶部操作：排序 / 高级编辑 */}
+      <div className="d-flex justify-end flex-wrap mb-2" style={{ gap: 4 }}>
+        <button
+          type="button"
+          className="v-btn v-btn--variant-text mr-2"
+          disabled={list.length === 0}
+          onClick={sortStudentsByPinyin}
+        >
+          <MdiIcon name="sort-alphabetical-variant" size={18} />
+          按姓名首字母排序
+        </button>
+        <button
+          type="button"
+          className={`v-btn v-btn--variant-text ${advanced ? 'btn-tonal' : ''}`}
+          onClick={toggleAdvanced}
+        >
+          <MdiIcon name="code-braces" size={18} />
+          {advanced ? '返回基础编辑' : '高级编辑'}
+        </button>
+      </div>
 
-          {state.students.length > 8 && (
-            <div className="relative mt-3">
-              <span
-                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2"
-                style={{ color: 'var(--text-3)' }}
-              >
-                <Icon name="search" size={15} />
-              </span>
-              <input
-                className="field pl-9"
-                placeholder="搜索"
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-              />
-            </div>
-          )}
-
-          <div className="mt-4 flex flex-wrap gap-1.5 pb-2">
-            {filtered.map((name) => (
-              <span
-                key={name}
-                className="group inline-flex items-center gap-1 rounded-[10px] py-1 pl-2.5 pr-1.5 text-[13px]"
-                style={{ background: 'var(--surface-2)', border: '1px solid var(--border)' }}
-              >
-                {name}
-                <button
-                  type="button"
-                  className="rounded p-0.5 transition-colors hover:bg-[var(--surface-3)]"
-                  style={{ color: 'var(--text-3)' }}
-                  onClick={() => remove(name)}
-                  aria-label={`删除 ${name}`}
-                >
-                  <Icon name="close" size={12} />
-                </button>
-              </span>
-            ))}
-            {filtered.length === 0 && (
-              <div className="py-6 text-center text-[13px] w-full" style={{ color: 'var(--text-3)' }}>
-                没有匹配的学生
-              </div>
-            )}
+      {advanced ? (
+        <div style={{ paddingTop: 8 }}>
+          <label className="v-label" htmlFor="student-bulk-text">
+            批量编辑学生列表
+          </label>
+          <textarea
+            id="student-bulk-text"
+            className="v-field"
+            rows={10}
+            style={{ fontFamily: 'var(--font-mono)' }}
+            value={text}
+            onChange={(event) => setText(event.target.value)}
+            placeholder={'每行输入一个学生姓名'}
+          />
+          <div className="text-caption" style={{ opacity: 0.7 }}>
+            使用文本编辑模式批量编辑学生名单，保存时会自动去除空行
           </div>
-        </>
+        </div>
       ) : (
         <>
-          <p className="mt-1 mb-2 text-[12.5px] leading-relaxed" style={{ color: 'var(--text-3)' }}>
-            每行一个姓名，也可以直接从 Excel 复制整列粘贴进来。行首序号会被自动去掉。
-          </p>
-          <textarea
-            className="field"
-            style={{ minHeight: 320, fontFamily: 'var(--font-mono)', fontSize: 13.5, lineHeight: 1.8 }}
-            value={bulkText}
-            onChange={(event) => setBulkText(event.target.value)}
-            placeholder={'张三\n李四\n王五'}
-          />
-          <div className="mt-2 text-right text-[12px] tabular-nums" style={{ color: 'var(--text-3)' }}>
-            解析到 {parseNames(bulkText).length} 人
+          {/* 添加学生 */}
+          <div className="mb-6">
+            <label className="v-label" htmlFor="student-add-input">
+              添加学生
+            </label>
+            <div className="v-field">
+              <MdiIcon
+                name="account-plus"
+                size={20}
+                className="pointer-events-none mr-2"
+                style={{ color: 'rgba(var(--v-theme-on-surface), 0.5)' }}
+              />
+              <input
+                id="student-add-input"
+                value={newName}
+                onChange={(event) => setNewName(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault()
+                    addStudent()
+                  }
+                }}
+                placeholder="输入学生姓名后回车添加"
+                style={{
+                  flex: '1 1 auto',
+                  minWidth: 0,
+                  border: 'none',
+                  outline: 'none',
+                  background: 'transparent',
+                  color: 'inherit',
+                  font: 'inherit',
+                }}
+              />
+              <button
+                type="button"
+                className="v-btn v-btn--icon v-btn--variant-text v-btn--size-small"
+                style={{ color: 'rgb(var(--v-theme-primary))' }}
+                disabled={!newName.trim()}
+                onClick={addStudent}
+                aria-label="添加学生"
+              >
+                <MdiIcon name="plus" size={20} />
+              </button>
+            </div>
+          </div>
+
+          {/* 学生卡片网格 */}
+          <div className="student-manage-grid">
+            {list.map((name, index) => (
+              <div
+                key={`${index}-${name}`}
+                className={`v-card border student-card${isMobile ? ' is-mobile' : ''}`}
+              >
+                <div className="d-flex align-center" style={{ padding: 12 }}>
+                  <span style={{ position: 'relative' }}>
+                    <button
+                      type="button"
+                      className="v-btn v-btn--size-small v-btn--variant-tonal mr-3 font-weight-medium"
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        setMenuIndex(menuIndex === index ? -1 : index)
+                      }}
+                    >
+                      {index + 1}
+                    </button>
+                    {menuIndex === index && (
+                      <div className="student-menu" onClick={(event) => event.stopPropagation()}>
+                        <div className="v-list">
+                          <button
+                            type="button"
+                            className="v-list-item"
+                            disabled={index === 0}
+                            onClick={() => {
+                              moveStudent(index, 'top')
+                              setMenuIndex(-1)
+                            }}
+                          >
+                            <MdiIcon name="arrow-up-bold" size={18} className="mr-2" />
+                            <span className="v-list-item-title">置顶</span>
+                          </button>
+                          <hr className="v-divider" />
+                          <button
+                            type="button"
+                            className="v-list-item"
+                            disabled={index === 0}
+                            onClick={() => {
+                              moveStudent(index, 'up')
+                              setMenuIndex(-1)
+                            }}
+                          >
+                            <MdiIcon name="arrow-up" size={18} className="mr-2" />
+                            <span className="v-list-item-title">上移</span>
+                          </button>
+                          <button
+                            type="button"
+                            className="v-list-item"
+                            disabled={index === list.length - 1}
+                            onClick={() => {
+                              moveStudent(index, 'down')
+                              setMenuIndex(-1)
+                            }}
+                          >
+                            <MdiIcon name="arrow-down" size={18} className="mr-2" />
+                            <span className="v-list-item-title">下移</span>
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </span>
+
+                  {editIndex === index ? (
+                    <input
+                      className="student-name-input"
+                      value={editName}
+                      autoFocus
+                      onChange={(event) => setEditName(event.target.value)}
+                      onBlur={saveEdit}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          event.preventDefault()
+                          saveEdit()
+                        }
+                      }}
+                    />
+                  ) : (
+                    <span
+                      className="text-body-1 flex-grow-1"
+                      style={{ cursor: isMobile ? 'pointer' : 'default', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                      onClick={() => {
+                        if (isMobile) {
+                          setEditIndex(index)
+                          setEditName(name)
+                        }
+                      }}
+                    >
+                      {name}
+                    </span>
+                  )}
+
+                  <div className="d-flex action-buttons" style={{ gap: 4 }}>
+                    <button
+                      type="button"
+                      className="v-btn v-btn--icon v-btn--variant-text v-btn--size-small"
+                      data-color="primary"
+                      onClick={() => {
+                        setEditIndex(index)
+                        setEditName(name)
+                      }}
+                      aria-label={`编辑 ${name}`}
+                    >
+                      <MdiIcon name="pencil" size={18} />
+                    </button>
+                    <button
+                      type="button"
+                      className="v-btn v-btn--icon v-btn--variant-text v-btn--size-small"
+                      data-color="error"
+                      onClick={() => removeStudent(index)}
+                      aria-label={`删除 ${name}`}
+                    >
+                      <MdiIcon name="delete" size={18} />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))}
           </div>
         </>
       )}
+
+      {/* 保存 / 重载 */}
+      <div className="d-flex flex-wrap mt-6" style={{ gap: 8 }}>
+        <button
+          type="button"
+          className="v-btn v-btn--size-large v-btn--variant-elevated"
+          data-color="primary"
+          onClick={() => void saveStudents()}
+        >
+          <MdiIcon name="content-save" size={18} />
+          保存名单
+        </button>
+        <button
+          type="button"
+          className="v-btn v-btn--size-large v-btn--variant-outlined"
+          data-color="error"
+          onClick={reloadStudents}
+        >
+          <MdiIcon name="refresh" size={18} />
+          重载名单
+        </button>
+      </div>
     </Modal>
   )
 }

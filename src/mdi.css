@@ -17,8 +17,10 @@
 }
 .mdi-account::before{content:"\F0004"}
 .mdi-account-cancel::before{content:"\F12DF"}
+.mdi-account-check::before{content:"\F0008"}
 .mdi-account-group::before{content:"\F0849"}
 .mdi-account-off::before{content:"\F0012"}
+.mdi-account-plus::before{content:"\F0014"}
 .mdi-account-question::before{content:"\F0B59"}
 .mdi-alert::before{content:"\F0026"}
 .mdi-alert-circle::before{content:"\F0028"}
@@ -27,6 +29,9 @@
 .mdi-animation-play::before{content:"\F093A"}
 .mdi-arrow-left::before{content:"\F004D"}
 .mdi-arrow-right::before{content:"\F0054"}
+.mdi-arrow-down::before{content:"\F0045"}
+.mdi-arrow-up::before{content:"\F005D"}
+.mdi-arrow-up-bold::before{content:"\F0737"}
 .mdi-bell::before{content:"\F009A"}
 .mdi-bell-alert::before{content:"\F0D59"}
 .mdi-bell-ring::before{content:"\F009E"}
@@ -45,6 +50,7 @@
 .mdi-check::before{content:"\F012C"}
 .mdi-check-circle::before{content:"\F05E0"}
 .mdi-chevron-down::before{content:"\F0140"}
+.mdi-chevron-up::before{content:"\F0143"}
 .mdi-chevron-left::before{content:"\F0141"}
 .mdi-chevron-right::before{content:"\F0142"}
 .mdi-circle-half-full::before{content:"\F1396"}
@@ -55,12 +61,14 @@
 .mdi-clock-time-six-outline::before{content:"\F1450"}
 .mdi-close::before{content:"\F0156"}
 .mdi-cloud::before{content:"\F015F"}
+.mdi-code-braces::before{content:"\F0169"}
 .mdi-code-tags::before{content:"\F0174"}
 .mdi-cog::before{content:"\F0493"}
 .mdi-cog-outline::before{content:"\F08BB"}
 .mdi-comment-quote::before{content:"\F1021"}
 .mdi-content-copy::before{content:"\F018F"}
 .mdi-content-paste::before{content:"\F0192"}
+.mdi-content-save::before{content:"\F0193"}
 .mdi-content-save-outline::before{content:"\F0818"}
 .mdi-counter::before{content:"\F0199"}
 .mdi-database::before{content:"\F01BC"}
@@ -128,6 +136,7 @@
 .mdi-shield-key::before{content:"\F0BC4"}
 .mdi-shield-lock-outline::before{content:"\F0CCC"}
 .mdi-shuffle-variant::before{content:"\F049F"}
+.mdi-sort-alphabetical-variant::before{content:"\F04BB"}
 .mdi-sort-variant::before{content:"\F04BF"}
 .mdi-swap-vertical-bold::before{content:"\F0BCE"}
 .mdi-test-tube::before{content:"\F0668"}
