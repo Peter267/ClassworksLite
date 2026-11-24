@@ -241,6 +241,8 @@ export const adminApi = {
       guardLocal?: boolean
       auditStart?: boolean
       totalRecords?: number
+      /** 写入审计日志时的数据来源 */
+      source?: 'cloud' | 'backup'
     } = {},
   ) =>
     call<AdminImportResult>(
@@ -252,6 +254,7 @@ export const adminApi = {
         guardLocal: Boolean(options.guardLocal),
         auditStart: Boolean(options.auditStart),
         ...(options.totalRecords === undefined ? {} : { totalRecords: options.totalRecords }),
+        ...(options.source === undefined ? {} : { source: options.source }),
       },
       token,
       30_000,
@@ -264,6 +267,7 @@ export const adminApi = {
       failed: number
       bytes: number
       cancelled?: boolean
+      source?: 'cloud' | 'backup'
     },
   ) => call<{ ok: boolean }>({ action: 'import_summary', ...summary }, token),
 }

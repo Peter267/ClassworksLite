@@ -570,11 +570,12 @@ async function handleImport(
 
   const skipExisting = body.skipExisting === true
   const guardLocal = body.guardLocal === true
+  const sourceLabel = body.source === 'backup' ? '本地备份' : 'Classworks 云端'
   if (body.auditStart === true) {
     await appendAudit(backend, {
       actor: 'admin',
       action: 'import',
-      note: `开始从 Classworks 云端批量导入${
+      note: `开始从${sourceLabel}批量导入${
         typeof body.totalRecords === 'number' ? `（共 ${Math.floor(body.totalRecords)} 条）` : ''
       }`,
       ip: clientIp(request),
@@ -655,7 +656,7 @@ async function handleImport(
     await appendAudit(backend, {
       actor: 'admin',
       action: 'import',
-      note: `从 Classworks 云端导入 ${imported.length} 条${
+      note: `从${sourceLabel}导入 ${imported.length} 条${
         skipped.length ? `，跳过 ${skipped.length} 条` : ''
       }${failed.length ? `，失败 ${failed.length} 条` : ''}`,
       size: totalBytes,
@@ -691,10 +692,11 @@ async function handleImportSummary(
   if (imported + skipped + failed === 0) {
     return json({ ok: true, skippedLog: true }, 200, origin)
   }
+  const sourceLabel = body.source === 'backup' ? '本地备份' : 'Classworks 云端'
   await appendAudit(backend, {
     actor: 'admin',
     action: 'import',
-    note: `从 Classworks 云端导入 ${imported} 条${
+    note: `从${sourceLabel}导入 ${imported} 条${
       skipped ? `，跳过 ${skipped} 条` : ''
     }${failed ? `，失败 ${failed} 条` : ''}${body.cancelled === true ? '（已取消）' : ''}`,
     size: bytes,

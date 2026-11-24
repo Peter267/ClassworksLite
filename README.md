@@ -42,7 +42,7 @@ ClassworksLite 保留了 [Classworks](https://github.com/Moonrend/Classworks) �
 | 消息记录 | 顶栏铃铛 + 右侧抽屉，保留最近 100 条操作消息与类型图标 |
 | UAF 导入导出 | 选择日期 → 勾选作业 → 生成 PDF 预览 / 导出；导入 PDF 后按日期分组、冲突项可选保留或覆盖 |
 | 环境噪音监测 | 实时分贝、等级、评分与波形；晚自习时段自动记录并生成统计报告；支持自动 / 手动校准 |
-| 管理后台 | 密码登录后查看全站数据概况、搜索 / 编辑 / 删除 / 新建任意数据键、导出全站备份，并查看写入与登录审计日志 |
+| 管理后台 | 密码登录后查看全站数据概况、搜索 / 编辑 / 删除 / 新建任意数据键、导出全站备份并从备份文件恢复，查看写入与登录审计日志 |
 | 主题与排版 | 深色 / 浅色、正文字号 16–100px、自定义背景（模糊 + 遮罩） |
 | 防烧屏提示 | 可选展示 |
 | PWA | manifest + Service Worker，可安装、离线打开 |
@@ -152,6 +152,9 @@ SITE_PASSWORD=class-password EDIT_PASSWORD=teacher-password npm run dev
   最近 500 条。
 - **备份**：一键导出全部数据（`{ 键名: { value, updatedAt } }` 的 JSON 文件），
   数据键超过 1000 条或总大小超过 8 MB 时拒绝导出。
+- **恢复**：选择导出得到的备份 JSON → 与本地逐键比对后给出新增 / 覆盖 / 跳过明细 →
+  确认后按批写入。支持「覆盖同名键」与「仅导入新键」两种策略；写入带版本校验，
+  预览后被他人修改的数据会拒绝覆盖并列入失败清单。
 
 安全设计：
 
@@ -182,6 +185,7 @@ SITE_PASSWORD=class-password EDIT_PASSWORD=teacher-password npm run dev
 | 数据与同步 | `src/lib/store.ts`、`src/lib/kv.ts` |
 | 访问门与访问状态 | `src/components/AccessGate.tsx`、`src/lib/access.ts` |
 | 管理后台前端 | `src/pages/Admin.tsx`、`src/lib/admin.ts` |
+| 本地备份恢复 | `src/lib/localBackupImport.ts`、`src/components/admin/LocalBackupImportPanel.tsx` |
 | 访问 / 管理接口 | `server/auth-core.ts`、`server/admin-core.ts`、`server/token.ts`、`server/audit.ts` |
 | 服务端 | `server/kv-core.ts` + `functions` / `worker` / `api` 适配器 |
 | UAF 导入导出 | `src/lib/uafExport.ts` |
@@ -404,6 +408,7 @@ POST   /api/admin          → body { action, ... } → 200 { ... } | 400 / 401 
 │   │   ├── AccessGate.tsx   全屏访问密码门
 │   │   ├── NoiseMonitorDetail.tsx   噪音详情（实时 / 报告 / 校准）
 │   │   ├── UafTransferDialog.tsx    UAF 导入导出对话框
+│   │   ├── admin/           云端导入与本地备份恢复面板
 │   │   └── settings/               设置卡片、设置项、噪音设置、访问权限
 │   ├── pages/               作业板 / 设置 / 列表 / 考试看板 / 管理后台
 │   ├── lib/
@@ -414,6 +419,7 @@ POST   /api/admin          → body { action, ... } → 200 { ... } | 400 / 401 
 │   │   ├── admin.ts         管理接口客户端（登录、数据、日志、备份）
 │   │   ├── noise.ts         噪音采集、评分、校准与报告存储
 │   │   ├── uafExport.ts     UAF 校验、预览、导入计划与落盘
+│   │   ├── localBackupImport.ts  备份文件解析、逐键比对与写入计划
 │   │   ├── settings.ts      设置项定义与校验
 │   │   └── hooks.ts         useAppState / useSetting / useMasonry
 │   ├── vendor/uaf/          上游 UAF 浏览器 bundle

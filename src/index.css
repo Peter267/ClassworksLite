@@ -4124,6 +4124,8 @@
   .admin-tabs {
     display: flex;
     gap: 4px;
+    /* 按钮高 44px + 底边 1px 会让容器多出 1px，隐藏纵向滚动条避免出现细条 */
+    overflow-y: hidden;
     border-bottom: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
   }
 
@@ -4754,6 +4756,32 @@
     min-width: 0;
   }
 
+  .import-file-drop {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    padding: 26px 18px;
+    border: 2px dashed rgba(var(--v-border-color), calc(var(--v-border-opacity) * 2.2));
+    border-radius: 12px;
+    color: rgba(var(--v-theme-on-surface), 0.72);
+    text-align: center;
+    cursor: pointer;
+    transition:
+      border-color 0.15s,
+      background-color 0.15s;
+  }
+
+  .import-file-drop:hover,
+  .import-file-drop.active {
+    border-color: rgba(var(--v-theme-primary), 0.6);
+    background: rgba(var(--v-theme-primary), 0.06);
+  }
+
+  .import-file-drop .mdi {
+    color: rgba(var(--v-theme-primary), 0.85);
+  }
+
   .import-secret {
     position: relative;
     display: flex;
@@ -5121,6 +5149,10 @@
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 10px;
+  }
+
+  .import-strategy-grid--two {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .import-strategy {

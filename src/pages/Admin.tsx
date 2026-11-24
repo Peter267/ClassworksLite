@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } fro
 import { AppBar } from '../components/AppBar'
 import { MdiIcon } from '../components/MdiIcon'
 import { UpstreamImportPanel } from '../components/admin/UpstreamImportPanel'
+import { LocalBackupImportPanel } from '../components/admin/LocalBackupImportPanel'
 import { ConfirmDialog, Modal } from '../components/ui/Modal'
 import {
   AdminError,
@@ -15,7 +16,7 @@ import {
 import { relativeTime } from '../lib/date'
 import { toast } from '../lib/toast'
 
-type Tab = 'overview' | 'data' | 'import' | 'logs'
+type Tab = 'overview' | 'data' | 'import' | 'restore' | 'logs'
 type Phase = 'checking' | 'login' | 'ready'
 type ActorFilter = 'all' | 'admin' | 'site'
 
@@ -23,6 +24,7 @@ const TABS: { key: Tab; label: string; icon: string }[] = [
   { key: 'overview', label: '概览', icon: 'monitor' },
   { key: 'data', label: '数据', icon: 'database' },
   { key: 'import', label: '云端导入', icon: 'file-import-outline' },
+  { key: 'restore', label: '数据导入', icon: 'restore' },
   { key: 'logs', label: '日志', icon: 'history' },
 ]
 
@@ -30,6 +32,7 @@ const TAB_HEADINGS: Record<Tab, { title: string; subtitle: string }> = {
   overview: { title: '站点总览', subtitle: '全站数据、操作日志与备份' },
   data: { title: '数据管理', subtitle: '浏览、编辑、新建与删除全站数据键' },
   import: { title: '云端导入', subtitle: '从上游 Classworks 云端批量迁移作业与配置' },
+  restore: { title: '数据导入', subtitle: '从本地备份文件恢复全站数据键' },
   logs: { title: '操作日志', subtitle: '管理员与站点的写入、删除和登录记录' },
 }
 
@@ -127,6 +130,7 @@ export function AdminPage({ onBack }: { onBack: () => void }) {
   const [busy, setBusy] = useState(false)
   const [tab, setTab] = useState<Tab>('overview')
   const [importVisited, setImportVisited] = useState(false)
+  const [restoreVisited, setRestoreVisited] = useState(false)
 
   const [stats, setStats] = useState<AdminStats | null>(null)
   const [keys, setKeys] = useState<AdminKeyInfo[] | null>(null)
@@ -314,6 +318,16 @@ export function AdminPage({ onBack }: { onBack: () => void }) {
     if (tab === 'logs' && logs === null) void loadLogs()
   }, [phase, token, tab, keys, logs, loadKeys, loadLogs])
 
+  /** 导入/恢复后让数据与日志页按需重新读取，避免展示旧列表 */
+  const handleDataChanged = useCallback(() => {
+    setKeys(null)
+    setKeysTotal(0)
+    setKeysHasMore(false)
+    setKeysNextOffset(0)
+    setLogs(null)
+    void loadOverview(false)
+  }, [loadOverview])
+
   function openImport() {
     selectTab('import')
   }
@@ -324,6 +338,7 @@ export function AdminPage({ onBack }: { onBack: () => void }) {
 
   useEffect(() => {
     if (tab === 'import') setImportVisited(true)
+    if (tab === 'restore') setRestoreVisited(true)
   }, [tab])
 
   async function handleLogin(event: FormEvent<HTMLFormElement>) {
@@ -870,6 +885,14 @@ export function AdminPage({ onBack }: { onBack: () => void }) {
                     <button
                       type="button"
                       className="v-btn v-btn--variant-outlined"
+                      onClick={() => selectTab('restore')}
+                    >
+                      <MdiIcon name="file-import-outline" size={18} />
+                      从备份恢复
+                    </button>
+                    <button
+                      type="button"
+                      className="v-btn v-btn--variant-outlined"
                       onClick={() => void loadOverview()}
                       disabled={busy}
                     >
@@ -924,6 +947,14 @@ export function AdminPage({ onBack }: { onBack: () => void }) {
                   >
                     <MdiIcon name="file-export-outline" size={16} />
                     {exporting ? '导出中…' : '导出备份'}
+                  </button>
+                  <button
+                    type="button"
+                    className="v-btn v-btn--size-small v-btn--variant-outlined"
+                    onClick={() => selectTab('restore')}
+                  >
+                    <MdiIcon name="file-import-outline" size={16} />
+                    导入备份
                   </button>
                   <button
                     type="button"
@@ -1067,15 +1098,20 @@ export function AdminPage({ onBack }: { onBack: () => void }) {
             <div hidden={tab !== 'import'}>
               <UpstreamImportPanel
                 adminToken={token}
-                onChanged={() => {
-                  // 导入后让数据/日志页按需重新读取，避免展示旧列表
-                  setKeys(null)
-                  setKeysTotal(0)
-                  setKeysHasMore(false)
-                  setKeysNextOffset(0)
-                  setLogs(null)
-                  void loadOverview(false)
+                onChanged={handleDataChanged}
+                onOpenData={() => selectTab('data')}
+                onAuthError={(err) => {
+                  handleAuthError(err)
                 }}
+              />
+            </div>
+          )}
+
+          {token && restoreVisited && (
+            <div hidden={tab !== 'restore'}>
+              <LocalBackupImportPanel
+                adminToken={token}
+                onChanged={handleDataChanged}
                 onOpenData={() => selectTab('data')}
                 onAuthError={(err) => {
                   handleAuthError(err)
