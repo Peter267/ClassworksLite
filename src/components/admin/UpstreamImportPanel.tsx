@@ -1643,10 +1643,9 @@ export function UpstreamImportPanel({
           </>
         }
         confirmText={importing ? '导入中…' : '开始导入'}
+        confirmDisabled={importing}
         danger={overwriteCount > 0}
-        onCancel={() => {
-          if (!importing) setConfirmOpen(false)
-        }}
+        onCancel={() => setConfirmOpen(false)}
         onConfirm={() => void executeImport()}
       />
 

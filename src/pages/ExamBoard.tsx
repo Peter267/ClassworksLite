@@ -35,7 +35,7 @@ export function ExamBoard({ onBack }: { onBack: () => void }) {
   const [blockPast] = useSetting<boolean>('edit.blockPastDataEdit')
   const [editing, setEditing] = useState<ExamConfig | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<ExamConfig | null>(null)
-  const [deleting, setDeleting] = useState(false)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
   const dataReady = state.status === 'ready' && state.loaded
   // 固定/移出看板写的是当前日期的作业板，历史日期同样受「禁止编辑历史」约束（F6）
   const boardLocked = (blockPast && isPastDay(state.date)) || !dataReady
@@ -198,20 +198,21 @@ export function ExamBoard({ onBack }: { onBack: () => void }) {
             此操作不可恢复。
           </>
         }
-        confirmText={deleting ? '删除中…' : '删除'}
+        confirmText={deleteTarget && deletingId === deleteTarget.id ? '删除中…' : '删除'}
+        confirmDisabled={Boolean(deletingId)}
         danger
-        onCancel={() => {
-          if (!deleting) setDeleteTarget(null)
-        }}
+        /* 删除在后台继续执行，弹窗本身任何时候都可以关闭，避免大屏前被卡住 */
+        onCancel={() => setDeleteTarget(null)}
         onConfirm={() => {
-          if (!deleteTarget || deleting) return
-          setDeleting(true)
+          if (!deleteTarget || deletingId) return
+          const target = deleteTarget
+          setDeletingId(target.id)
           void store
-            .deleteExam(deleteTarget.id)
+            .deleteExam(target.id)
             .then((ok) => {
               if (ok) setDeleteTarget(null)
             })
-            .finally(() => setDeleting(false))
+            .finally(() => setDeletingId(null))
         }}
       />
     </div>

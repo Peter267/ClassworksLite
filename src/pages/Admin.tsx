@@ -1453,10 +1453,9 @@ export function AdminPage({ onBack }: { onBack: () => void }) {
           </>
         }
         confirmText={deleting ? '删除中…' : '删除'}
+        confirmDisabled={deleting}
         danger
-        onCancel={() => {
-          if (!deleting) setDeleteTarget(null)
-        }}
+        onCancel={() => setDeleteTarget(null)}
         onConfirm={() => void confirmDelete()}
       />
 
@@ -1465,10 +1464,9 @@ export function AdminPage({ onBack }: { onBack: () => void }) {
         title="清空操作日志"
         text="将删除全部历史日志（包括管理员与站点操作记录），此操作不可恢复。"
         confirmText={clearing ? '清空中…' : '清空'}
+        confirmDisabled={clearing}
         danger
-        onCancel={() => {
-          if (!clearing) setClearOpen(false)
-        }}
+        onCancel={() => setClearOpen(false)}
         onConfirm={() => void confirmClearLogs()}
       />
     </>

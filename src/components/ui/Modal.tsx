@@ -186,7 +186,11 @@ export function Modal({
           <header className="d-flex align-center" style={{ padding: '8px 8px 8px 16px', gap: 8 }}>
             <div className="flex-grow-1" style={{ minWidth: 0 }}>
               {title && (
-                <div id={titleId} className="v-card-title" style={{ padding: 0, minHeight: 40 }}>
+                <div
+                  id={titleId}
+                  className="v-card-title d-flex align-center"
+                  style={{ padding: 0, minHeight: 40 }}
+                >
                   {title}
                 </div>
               )}
@@ -241,6 +245,7 @@ export function ConfirmDialog({
   confirmText = '确认',
   cancelText = '取消',
   danger,
+  confirmDisabled,
   onConfirm,
   onCancel,
 }: {
@@ -250,6 +255,8 @@ export function ConfirmDialog({
   confirmText?: string
   cancelText?: string
   danger?: boolean
+  /** 确认按钮忙碌时禁用，但弹窗仍可关闭 */
+  confirmDisabled?: boolean
   onConfirm: () => void
   onCancel: () => void
 }) {
@@ -269,6 +276,7 @@ export function ConfirmDialog({
             type="button"
             className="v-btn v-btn--variant-flat"
             data-color={danger ? 'error' : 'primary'}
+            disabled={confirmDisabled}
             onClick={onConfirm}
           >
             {confirmText}
