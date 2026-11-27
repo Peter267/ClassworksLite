@@ -111,7 +111,7 @@ export function AttendanceCard({ onOpen }: { onOpen: () => void }) {
         )
       }}
     >
-      <div className="v-card-title">
+      <div className="v-card-title d-flex align-center">
         <MdiIcon name="account-group" size={20} className="text-primary mr-2" />
         出勤统计
       </div>

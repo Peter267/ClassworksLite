@@ -341,15 +341,25 @@
     box-shadow: var(--v-elevation-4);
   }
 
+  /* 与上游 Vuetify 3 输出逐条对齐（无 min-height、单行省略、字距 0.0125em）。
+     需要横向排布时由组件显式加 d-flex（上游同样如此）。 */
   .v-card-title {
-    display: flex;
-    align-items: center;
-    min-height: 52px;
+    display: block;
+    flex: none;
+    min-width: 0;
     padding: 0.5rem 1rem;
     font-size: 1.25rem;
     font-weight: 500;
     line-height: 1.6;
-    overflow-wrap: break-word;
+    letter-spacing: 0.0125em;
+    hyphens: auto;
+    overflow: hidden;
+    overflow-wrap: normal;
+    text-overflow: ellipsis;
+    text-transform: none;
+    white-space: nowrap;
+    word-break: normal;
+    word-wrap: break-word;
   }
 
   .v-card-subtitle {
@@ -363,6 +373,13 @@
     padding: 1rem;
     font-size: 0.875rem;
     line-height: 1.425;
+  }
+
+  /* 上游：标题之后的内容区顶边不再叠加内边距 */
+  .v-card-item + .v-card-text,
+  .v-card-title + .v-card-text,
+  .v-card-title + .v-card-actions {
+    padding-top: 0;
   }
 
   .v-card-item {
@@ -1027,6 +1044,17 @@
   /* 作业卡片内的单行文字不响应 hover 背景高亮 */
   .v-list-item.homework-line:hover {
     background: transparent;
+  }
+
+  /* 上游 v-list-item 的上下内边距为 4px（作业行与标题的间距来源之一） */
+  .v-list-item.homework-line {
+    padding: 4px 16px;
+  }
+
+  .homework-line > .v-list-item__content {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow-wrap: break-word;
   }
 
   .v-list-item--active {

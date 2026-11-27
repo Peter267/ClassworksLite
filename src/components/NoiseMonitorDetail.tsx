@@ -260,7 +260,7 @@ export function NoiseMonitorDetail({
 
   return (
     <Modal open={open} onClose={onClose} width={900} bare closable={false}>
-      <div className="v-card-title" style={{ padding: '16px', gap: 8 }}>
+      <div className="v-card-title d-flex align-center" style={{ padding: '16px', gap: 8 }}>
         <Icon name="waveform" size={22} className="text-primary mr-2" />
         <span className="text-h6 font-weight-bold">环境噪音监测</span>
         <div className="flex-grow-1" />

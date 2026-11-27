@@ -85,17 +85,8 @@ export const HomeworkCard = memo(function HomeworkCard({
       <div className="v-card-text" style={{ fontSize }}>
         <div className="v-list">
           {lines.map((line, index) => (
-            <div
-              className="v-list-item homework-line"
-              key={`${index}-${line}`}
-              style={{ minHeight: 32 }}
-            >
-              <div
-                className="v-list-item-title"
-                style={{ lineHeight: 1.55, fontSize, overflowWrap: 'anywhere' }}
-              >
-                {line}
-              </div>
+            <div className="v-list-item homework-line" key={`${index}-${line}`}>
+              <div className="v-list-item__content">{line}</div>
             </div>
           ))}
         </div>

@@ -317,7 +317,7 @@ export function TimeCard() {
             <Icon name="microphone" size={36} />
           </span>
         </div>
-        <div className="v-card-title text-h6 justify-center" style={{ paddingTop: 16 }}>
+        <div className="v-card-title text-h6 text-center" style={{ paddingTop: 16 }}>
           开启环境噪音监测
         </div>
         <div className="text-body-2 text-medium-emphasis" style={{ padding: '0 8px' }}>

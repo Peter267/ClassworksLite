@@ -676,7 +676,10 @@ function ConciseExamCard({ exam, onOpen }: { exam?: ExamConfig; onOpen: () => vo
 
   return (
     <article className="v-card border rounded-xl hover-card" onClick={onOpen}>
-      <div className="v-card-title text-subtitle-1 font-weight-bold" style={{ background: 'rgba(var(--v-theme-primary), 0.05)' }}>
+      <div
+        className="v-card-title d-flex align-center text-subtitle-1 font-weight-bold"
+        style={{ background: 'rgba(var(--v-theme-primary), 0.05)' }}
+      >
         <span className="text-truncate">{exam.examName}</span>
       </div>
       <div className="v-card-text" style={{ padding: 16 }}>
